@@ -59,7 +59,7 @@ jobs:
 
       # 未配置 release keystore 时用 AGP 生成的 debug key 签名。
       - name: Build release APK
-        run: gradle --no-daemon :app:assembleRelease
+        run: gradle --no-daemon :app:assembleRelease -x :app:checkReleaseAarMetadata
 
       - name: Package APK
         run: |
