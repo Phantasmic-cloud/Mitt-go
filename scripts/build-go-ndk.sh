@@ -17,6 +17,8 @@ OUT=$ROOT/app/src/main/jniLibs/arm64-v8a
 mkdir -p "$OUT"
 
 cd "$ROOT/core"
+# -mod=mod so a clean checkout may adjust go.mod/go.sum for the toolchain in use.
+export GOFLAGS=-mod=mod
 CGO_ENABLED=1 GOOS=android GOARCH=arm64 \
     CC="$NDK_BIN/aarch64-linux-android$API-clang" \
     CGO_LDFLAGS="-Wl,-z,max-page-size=16384" \
