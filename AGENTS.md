@@ -5,7 +5,7 @@
 ## 1. 现状
 
 - 版本 `2.0.1`（versionCode 76），minSdk 33 / targetSdk 36 / compileSdk 37，仅 `arm64-v8a`
-- 内核：Go 1.23 + `go-mitmproxy v1.9.4`，编成 `libmittgocore.so`（`-buildmode=c-shared`），JNI 直调
+- 内核：Go 1.26+ + `go-mitmproxy v1.9.4`，编成 `libmittgocore.so`（`-buildmode=c-shared`），JNI 直调
 - 平台侧：Kotlin + Jetpack Compose 1.12.0 + Miuix 0.9.4
 
 已经做完的：导航栈与转场、四项一级页 Pager、抓包列表/详情/导出、已读变暗、搜索与高亮、按 URL/域名两种视图、域名过滤（白/黑名单）、历史落盘、证书页（内置 + 印度两模式、三种导出方式）、旁路上传（YAML 导入、编辑器、正则命中、异步 POST、大小限制、重试、通知）。

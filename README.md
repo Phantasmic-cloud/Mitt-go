@@ -20,7 +20,7 @@ Mitt-go-arm64-v8a-release-<版本号>.apk
 
 ## 从源码构建
 
-需要 JDK 17、Android SDK（`compileSdk 37`）、Go 1.23、Android NDK。
+需要 JDK 17、Android SDK（`compileSdk 37`）、Go 1.26+、Android NDK。
 
 ```bash
 export ANDROID_NDK_HOME=<ndk 路径>
