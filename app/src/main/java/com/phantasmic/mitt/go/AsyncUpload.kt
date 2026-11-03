@@ -46,9 +46,24 @@ object AsyncUploadStore {
     fun list(context: Context): List<AsyncConfig> {
         val files = dir(context).listFiles { file -> file.isFile && file.name.endsWith(".yaml") }
             ?: return emptyList()
+        val enabled = enabledIds(context)
         return files.mapNotNull { file ->
-            runCatching { parse(file.name.removeSuffix(".yaml"), file.readText()) }.getOrNull()
+            val id = file.name.removeSuffix(".yaml")
+            runCatching { parse(id, file.readText()) }.getOrNull()?.copy(enabled = id in enabled)
         }.sortedBy { it.name.lowercase() }
+    }
+
+    /** 每份配置的开关：导入后默认关闭，单独存在 SharedPreferences 里。 */
+    private fun prefs(context: Context) =
+        context.getSharedPreferences("mitt_go_async_upload", Context.MODE_PRIVATE)
+
+    fun enabledIds(context: Context): Set<String> =
+        prefs(context).getStringSet("enabled_ids", emptySet())?.toSet().orEmpty()
+
+    fun setEnabled(context: Context, id: String, enabled: Boolean) {
+        val next = if (enabled) enabledIds(context) + id else enabledIds(context) - id
+        prefs(context).edit().putStringSet("enabled_ids", next).apply()
+        revision.intValue++
     }
 
     fun raw(context: Context, id: String): String? =
@@ -56,7 +71,10 @@ object AsyncUploadStore {
 
     fun delete(context: Context, id: String): Boolean {
         val ok = runCatching { File(dir(context), "$id.yaml").delete() }.getOrDefault(false)
-        if (ok) revision.intValue++
+        if (ok) {
+            prefs(context).edit().putStringSet("enabled_ids", enabledIds(context) - id).apply()
+            revision.intValue++
+        }
         return ok
     }
 
@@ -109,10 +127,8 @@ object AsyncUploadStore {
 
     fun parse(id: String, raw: String): AsyncConfig {
         val name = (lineValue(raw, "name") ?: "").trim().ifBlank { "未命名配置" }
-        val enabled = when ((lineValue(raw, "enable") ?: "true").lowercase()) {
-            "false", "no", "off", "0" -> false
-            else -> true
-        }
+        // 启用状态存在 SharedPreferences，YAML 里写什么都只作废字段。
+        val enabled = false
         val serverUrl = (lineValue(raw, "server_url") ?: "").trim()
         return AsyncConfig(
             id = id,

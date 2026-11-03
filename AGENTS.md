@@ -135,6 +135,8 @@ YAML 由 Kotlin 读成字符串，一次性打包下发：
 
 - 匹配用 `match_url` 里的 Go 正则（支持命名捕获组），变量可在 `server_url` / `rename` / `headers` / `notify.extra_info` 里用；内置变量有 `{time}`（东八区 `yyyyMMdd-HHmmss`）、`{original_url}`（被抓到的原始 URL）、`{random}`（9 位小写十六进制随机串）
 - `file.type` 决定搬请求体还是响应体；原流量照常转发，拷贝出来的 body 交给 goroutine 异步 POST
+- `file.chunk_upload`：`{enable: true, chunk_size: 1048576}` 时超过 `chunk_size` 的 body 会切片上传，内核自动补 `X-Chunk-Index` / `X-Total-Chunks` 头，任一片非 200 即整体失败；不写这段或 `enable: false` 就是整块发
+- 顶层 `enable` 字段已废弃：启用状态由 App 内每份配置的开关决定（存 SharedPreferences `mitt_go_async_upload`），新导入的配置默认关闭
 - `file.rename` 非空时发 `multipart/form-data`（字段名 `file`），同时补 `X-Filename` / `X-File-Name` 头；为空则发裸 body
 - `size_limit.min/max`：0 表示该端不限；命中 URL 但大小不符会写一条「跳过」日志并继续试下一条规则
 - `max_retries`：失败重试到上限后，通知里追加「重试次数达到上限」

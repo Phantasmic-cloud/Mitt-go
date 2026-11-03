@@ -9,6 +9,8 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -279,7 +281,20 @@ fun AsyncUploadPage(
                                     overflow = TextOverflow.Ellipsis,
                                 )
                             }
-                            Spacer(Modifier.width(8.dp))
+                            Switch(
+                                checked = config.enabled,
+                                onCheckedChange = { checked ->
+                                    AsyncUploadStore.setEnabled(context, config.id, checked)
+                                    AsyncUploadRuntime.sync()
+                                    refresh()
+                                    MittLog.info(
+                                        "async",
+                                        (if (checked) "已启用「" else "已停用「") + config.name + "」",
+                                    )
+                                },
+                                colors = SwitchDefaults.colors(checkedTrackColor = colors.primary),
+                            )
+                            Spacer(Modifier.width(4.dp))
                             Text(
                                 text = "导出",
                                 fontSize = 13.sp,

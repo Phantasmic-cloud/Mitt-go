@@ -52,6 +52,8 @@ type asyncYamlConfig struct {
 				Min int `yaml:"min"`
 				Max int `yaml:"max"`
 			} `yaml:"size_limit"`
+			// 超过 chunk_size 的 body 会自动切片上传；不写这段就是整块发。
+			ChunkUpload asyncChunkConfig `yaml:"chunk_upload"`
 		} `yaml:"file"`
 		Timeout    int `yaml:"timeout"`
 		MaxRetries int `yaml:"max_retries"`
@@ -72,6 +74,7 @@ type asyncRule struct {
 	rename      string
 	minSize     int
 	maxSize     int
+	chunkSize   int
 	timeout     time.Duration
 	maxRetries  int
 	notify      bool
@@ -180,10 +183,6 @@ func SetAsyncUpload(payloadJSON string) string {
 				asyncErrorf("第 %d 份配置解析失败：%v", index+1, err)
 				continue
 			}
-			if !cfg.Enable {
-				asyncLogf("配置「%s」enable=false，已跳过", cfg.Name)
-				continue
-			}
 			rule, err := compileAsyncRule(cfg)
 			if err != nil {
 				asyncErrorf("配置「%s」无效：%v", cfg.Name, err)
@@ -196,6 +195,27 @@ func SetAsyncUpload(payloadJSON string) string {
 	asyncStore.Store(set)
 	asyncLogf("旁路上传总开关=%v，生效规则=%d", set.enabled, len(set.rules))
 	return ""
+}
+
+// asyncChunkConfig 对应 YAML 里的 upload.file.chunk_upload。
+type asyncChunkConfig struct {
+	Enable    bool `yaml:"enable"`
+	ChunkSize int  `yaml:"chunk_size"`
+}
+
+// asyncChunkSize 归一化分片配置：没开就是 0（整块发），开了默认 1 MiB，下限 64 KiB。
+func asyncChunkSize(cfg asyncChunkConfig) int {
+	if !cfg.Enable {
+		return 0
+	}
+	size := cfg.ChunkSize
+	if size <= 0 {
+		size = 1 << 20
+	}
+	if size < 64<<10 {
+		size = 64 << 10
+	}
+	return size
 }
 
 func compileAsyncRule(cfg asyncYamlConfig) (asyncRule, error) {
@@ -241,6 +261,7 @@ func compileAsyncRule(cfg asyncYamlConfig) (asyncRule, error) {
 		rename:      strings.TrimSpace(cfg.Upload.File.Rename),
 		minSize:     maxInt(cfg.Upload.File.SizeLimit.Min, 0),
 		maxSize:     maxInt(cfg.Upload.File.SizeLimit.Max, 0),
+		chunkSize:   asyncChunkSize(cfg.Upload.File.ChunkUpload),
 		timeout:     time.Duration(timeout) * time.Second,
 		maxRetries:  maxInt(cfg.Upload.MaxRetries, 0),
 		notify:      cfg.Notify.Enabled,
@@ -483,7 +504,33 @@ func (r asyncRule) notifyUser(vars map[string]string, detail string) {
 	asyncLogf("通知：%s", strings.ReplaceAll(body, "\n", " "))
 }
 
+// post 按需切片，把每片交给 postOnce；未开启分片时就是一次普通请求。
 func (r asyncRule) post(client *http.Client, target, filename string, body []byte, vars map[string]string) (int, string, error) {
+	if r.chunkSize <= 0 || len(body) <= r.chunkSize {
+		return r.postOnce(client, target, filename, body, vars, 0, 1)
+	}
+	total := (len(body) + r.chunkSize - 1) / r.chunkSize
+	status, message := 0, ""
+	for index := 0; index < total; index++ {
+		start := index * r.chunkSize
+		end := start + r.chunkSize
+		if end > len(body) {
+			end = len(body)
+		}
+		code, msg, err := r.postOnce(client, target, filename, body[start:end], vars, index, total)
+		if err != nil {
+			return code, msg, fmt.Errorf("分片 %d/%d: %w", index+1, total, err)
+		}
+		if code != http.StatusOK {
+			return code, msg, fmt.Errorf("分片 %d/%d: HTTP %d", index+1, total, code)
+		}
+		status, message = code, msg
+	}
+	asyncLogf("「%s」分 %d 片上传完成", r.name, total)
+	return status, message, nil
+}
+
+func (r asyncRule) postOnce(client *http.Client, target, filename string, body []byte, vars map[string]string, index, total int) (int, string, error) {
 	// 有文件名就走 multipart/form-data：很多服务端
 	// 是从 multipart 的 filename 里取名字的，裸 body 只能读到默认值。
 	var reader io.Reader
@@ -526,6 +573,10 @@ func (r asyncRule) post(client *http.Client, target, filename string, body []byt
 				hasContentType = true
 			}
 		}
+	}
+	if r.chunkSize > 0 {
+		request.Header.Set("X-Chunk-Index", strconv.Itoa(index))
+		request.Header.Set("X-Total-Chunks", strconv.Itoa(total))
 	}
 	if multipartType != "" {
 		request.Header.Set("Content-Type", multipartType)

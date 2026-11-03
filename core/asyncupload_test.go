@@ -1,11 +1,14 @@
 package mittgo
 
 import (
+	"bytes"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -258,10 +261,98 @@ upload:
 	if err != nil {
 		t.Fatalf("compile2: %v", err)
 	}
-	if rule2.maxSize != 0 || !rule2.sizeAllowed(50 << 20) {
+	if rule2.maxSize != 0 || !rule2.sizeAllowed(50<<20) {
 		t.Fatalf("只填 min 时不该限制上限：max=%d", rule2.maxSize)
 	}
 	if rule2.sizeAllowed(50) {
 		t.Fatalf("小于 min 应该被拒绝")
+	}
+}
+
+func TestAsyncChunkUpload(t *testing.T) {
+	var mu sync.Mutex
+	var indexes []int
+	var totals []int
+	var bodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		index, _ := strconv.Atoi(r.Header.Get("X-Chunk-Index"))
+		total, _ := strconv.Atoi(r.Header.Get("X-Total-Chunks"))
+		mu.Lock()
+		indexes = append(indexes, index)
+		totals = append(totals, total)
+		bodies = append(bodies, string(body))
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"detail":"ok"}`))
+	}))
+	defer server.Close()
+
+	raw := fmt.Sprintf(`
+name: 分片
+match_url:
+  - '^https://example\.com/chunk$'
+upload:
+  server_url: %s/upload
+  file:
+    type: Response Body
+    chunk_upload:
+      enable: true
+      chunk_size: 65536
+`, server.URL)
+	var cfg asyncYamlConfig
+	if err := yaml.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatalf("yaml: %v", err)
+	}
+	rule, err := compileAsyncRule(cfg)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if rule.chunkSize != 65536 {
+		t.Fatalf("chunkSize = %d", rule.chunkSize)
+	}
+
+	body := bytes.Repeat([]byte("a"), 150000)
+	status, _, err := rule.post(&http.Client{}, server.URL+"/upload", "", body, map[string]string{})
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("status = %d", status)
+	}
+	if len(bodies) != 3 {
+		t.Fatalf("expected 3 chunks, got %d", len(bodies))
+	}
+	if indexes[0] != 0 || indexes[1] != 1 || indexes[2] != 2 {
+		t.Fatalf("chunk indexes = %v", indexes)
+	}
+	for _, total := range totals {
+		if total != 3 {
+			t.Fatalf("total chunks = %v", totals)
+		}
+	}
+	if strings.Join(bodies, "") != string(body) {
+		t.Fatalf("chunk bodies do not add up")
+	}
+
+	// 关掉分片：即使 body 很大也只发一次，且不带分片头。
+	off := strings.Replace(raw, "enable: true", "enable: false", 1)
+	var cfg2 asyncYamlConfig
+	if err := yaml.Unmarshal([]byte(off), &cfg2); err != nil {
+		t.Fatalf("yaml2: %v", err)
+	}
+	rule2, err := compileAsyncRule(cfg2)
+	if err != nil {
+		t.Fatalf("compile2: %v", err)
+	}
+	if rule2.chunkSize != 0 {
+		t.Fatalf("chunk should be off, got %d", rule2.chunkSize)
+	}
+	indexes, totals, bodies = nil, nil, nil
+	if _, _, err := rule2.post(&http.Client{}, server.URL+"/upload", "", body, map[string]string{}); err != nil {
+		t.Fatalf("post2: %v", err)
+	}
+	if len(bodies) != 1 {
+		t.Fatalf("expected 1 request, got %d", len(bodies))
 	}
 }
