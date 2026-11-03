@@ -57,7 +57,25 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      # 未配置 release keystore 时用 AGP 生成的 debug key 签名。
+      - name: Decode release keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.MITT_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.MITT_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.MITT_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.MITT_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "no release keystore configured, falling back to the debug key"
+            exit 0
+          fi
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/mittgo-release.jks"
+          {
+            echo "MITT_KEYSTORE=$RUNNER_TEMP/mittgo-release.jks"
+            echo "MITT_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD"
+            echo "MITT_KEY_ALIAS=$KEY_ALIAS"
+            echo "MITT_KEY_PASSWORD=$KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
+
       - name: Build release APK
         run: gradle --no-daemon :app:assembleRelease -x :app:checkReleaseAarMetadata
 

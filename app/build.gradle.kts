@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -7,6 +9,19 @@ plugins {
 /** Miuix 0.9.4 internally expects Compose 1.12.0. */
 val composeVersion = "1.12.0"
 
+/**
+ * 发布签名：CI 通过环境变量注入 keystore，本地读 keystore/keystore.properties。
+ * 两者都没有时退回 debug 签名，保证 clone 下来能直接构建。
+ */
+val releaseKeystoreProps = Properties().apply {
+    val file = rootProject.file("keystore/keystore.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+val envKeystore = System.getenv("MITT_KEYSTORE")
+val hasReleaseKeystore =
+    !envKeystore.isNullOrBlank() || !releaseKeystoreProps.getProperty("storeFile").isNullOrBlank()
+
+
 android {
     namespace = "com.phantasmic.mitt.go"
     compileSdk = 37
@@ -15,8 +30,8 @@ android {
         applicationId = "com.phantasmic.mitt.go"
         minSdk = 33
         targetSdk = 36
-        versionCode = 77
-        versionName = "2.0.2"
+        versionCode = 78
+        versionName = "2.0.3"
 
         ndk {
             abiFilters += "arm64-v8a"
@@ -32,9 +47,23 @@ android {
             isDebuggable = false
         }
         release {
-            // 还没有专属发布密钥：先用 debug keystore 签名，保证能直接覆盖安装。
-            // 等正式发布前把这里换成自己的 release keystore（放到 keystore.properties，别提交）。
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = if (hasReleaseKeystore) {
+                signingConfigs.create("release") {
+                    if (!envKeystore.isNullOrBlank()) {
+                        storeFile = file(envKeystore)
+                        storePassword = System.getenv("MITT_KEYSTORE_PASSWORD")
+                        keyAlias = System.getenv("MITT_KEY_ALIAS") ?: "mittgo"
+                        keyPassword = System.getenv("MITT_KEY_PASSWORD") ?: storePassword
+                    } else {
+                        storeFile = rootProject.file(releaseKeystoreProps.getProperty("storeFile"))
+                        storePassword = releaseKeystoreProps.getProperty("storePassword")
+                        keyAlias = releaseKeystoreProps.getProperty("keyAlias")
+                        keyPassword = releaseKeystoreProps.getProperty("keyPassword") ?: storePassword
+                    }
+                }
+            } else {
+                signingConfigs.getByName("debug")
+            }
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(

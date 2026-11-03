@@ -43,7 +43,7 @@ data class MittSettings(
     val domainWhitelist: Set<String> = emptySet(),
     val domainBlacklist: Set<String> = emptySet(),
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
-    val advancedEffects: Boolean = false,
+    val advancedEffects: Boolean = true,
     /** 抓包记录在 Kotlin 侧的内存上限，超出后丢最旧的。 */
     val memoryLimitMb: Int = 128,
     /** 历史自动保存天数：0 = 关闭。 */
@@ -109,7 +109,7 @@ object AppSettings {
             themeMode = runCatching {
                 ThemeMode.valueOf(enumOf(KEY_THEME_MODE, ThemeMode.SYSTEM.name))
             }.getOrDefault(ThemeMode.SYSTEM),
-            advancedEffects = sp.getBoolean(KEY_ADVANCED_EFFECTS, false),
+            advancedEffects = sp.getBoolean(KEY_ADVANCED_EFFECTS, true),
             memoryLimitMb = sp.getInt(KEY_MEMORY_LIMIT, 128).coerceIn(16, 2048),
             autoSaveDays = sp.getInt(KEY_AUTO_SAVE_DAYS, 0).coerceIn(0, 30),
             debugMode = sp.getBoolean(KEY_DEBUG_MODE, false),
