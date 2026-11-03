@@ -1,0 +1,7 @@
+Mitt-go 使用或参考了以下开源组件：
+
+- Miuix components (top.yukonga.miuix.kmp) — Apache License 2.0
+- go-mitmproxy (https://github.com/lqqyt2423/go-mitmproxy) — MIT License
+- AndroidLiquidGlass (https://github.com/Kyant0/AndroidLiquidGlass) — Apache License 2.0
+
+Mitt-go 自身以 Apache License 2.0 发布，全文见 LICENSE。

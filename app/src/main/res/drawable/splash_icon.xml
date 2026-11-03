@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 系统启动画面图标：288dp 画布、中间 96dp 的纸飞机。
+     应用首帧后由 MainActivity 接管退出动画（整层淡出，不做缩放），
+     Compose 里不再画第二份图标，所以不会出现两个尺寸互相切换。 -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:width="288dp"
+        android:height="288dp"
+        android:gravity="center">
+        <layer-list>
+            <item
+                android:width="96dp"
+                android:height="96dp"
+                android:gravity="center">
+                <bitmap
+                    android:gravity="fill"
+                    android:src="@drawable/ic_splash" />
+            </item>
+        </layer-list>
+    </item>
+</layer-list>

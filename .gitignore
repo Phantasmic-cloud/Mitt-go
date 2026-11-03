@@ -1,0 +1,20 @@
+# Gradle / Android
+.gradle/
+build/
+app/build/
+local.properties
+.idea/
+.kotlin/
+*.iml
+.DS_Store
+
+# 构建产物：Go 内核由构建脚本生成，不进仓库
+app/src/main/jniLibs/**/*.so
+app/src/main/assets/mittgocore
+Mitt-go-*.apk
+app/libs/*.aar
+
+# 签名相关，绝不提交
+keystore.properties
+*.jks
+*.keystore

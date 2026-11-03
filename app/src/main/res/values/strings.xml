@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Mitt-go</string>
+    <string name="vpn_channel_name">抓包服务</string>
+    <string name="vpn_active_notification_title">Mitt-go 正在抓包</string>
+    <string name="vpn_active_notification_content">流量经过本地 VPN 与 Go MITM 内核</string>
+</resources>

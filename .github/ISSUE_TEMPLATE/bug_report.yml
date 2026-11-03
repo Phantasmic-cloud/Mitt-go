@@ -1,0 +1,57 @@
+name: Bug report
+description: 报告一个可以复现的问题
+labels: [ bug ]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提之前先确认：用的不是改动过的包、问题能稳定复现。
+        崩溃请附上 logcat（过滤 `com.phantasmic.mitt.go`），抓不到包请说明是哪个 App。
+  - type: input
+    id: version
+    attributes:
+      label: Mitt-go 版本
+      description: 设置 → 关于里能看到，例如 2.0.1 (76)
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: 设备与系统
+      description: 机型 + Android 版本，例如 Pixel 8 / Android 14
+    validations:
+      required: true
+  - type: dropdown
+    id: certmode
+    attributes:
+      label: 证书模式
+      options:
+        - 内置证书
+        - 印度证书模式
+        - 未安装 / 不确定
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 打开…
+        2. 点击…
+        3. 看到…
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望结果
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志
+      description: logcat / last-crash.txt，贴关键片段即可
+      render: text
+    validations:
+      required: false
