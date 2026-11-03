@@ -14,6 +14,7 @@ package mittgo
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -216,8 +217,8 @@ func compileAsyncRule(cfg asyncYamlConfig) (asyncRule, error) {
 			continue
 		}
 		// (?<name>...) 是 Go 1.22+ 才认的写法，统一换成老式 (?P<name>...)。
-pattern = strings.ReplaceAll(pattern, "(?<", "(?P<")
-re, err := regexp.Compile(pattern)
+		pattern = strings.ReplaceAll(pattern, "(?<", "(?P<")
+		re, err := regexp.Compile(pattern)
 		if err != nil {
 			return asyncRule{}, fmt.Errorf("match_url %q 无法编译：%w", pattern, err)
 		}
@@ -269,6 +270,23 @@ func normalizeExtraInfo(value any) string {
 	default:
 		return strings.TrimSpace(fmt.Sprint(typed))
 	}
+}
+
+// randomToken 返回 n 位小写十六进制随机串。
+func randomToken(n int) string {
+	const hex = "0123456789abcdef"
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		seed := time.Now().UnixNano()
+		for i := range buf {
+			buf[i] = hex[byte(seed>>uint(i*4))&0x0f]
+		}
+		return string(buf)
+	}
+	for i := range buf {
+		buf[i] = hex[buf[i]&0x0f]
+	}
+	return string(buf)
 }
 
 func maxInt(value, minimum int) int {
@@ -352,6 +370,9 @@ func asyncHandleFlow(f *proxy.Flow) {
 				vars[name] = match[index]
 			}
 			vars["time"] = beijingTime().Format("20060102-150405")
+			// 内置变量：原始请求 URL，以及 9 位随机串（有些接口要求每次上传带唯一 ID）。
+			vars["original_url"] = url
+			vars["random"] = randomToken(9)
 
 			var payload []byte
 			if rule.fromRequest {

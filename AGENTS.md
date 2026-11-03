@@ -133,7 +133,7 @@ YAML 由 Kotlin 读成字符串，一次性打包下发：
 
 行为要点：
 
-- 匹配用 `match_url` 里的 Go 正则（支持命名捕获组），变量可在 `server_url` / `rename` / `notify.extra_info` 里用；内置 `{time}` 固定东八区 `yyyyMMdd-HHmmss`
+- 匹配用 `match_url` 里的 Go 正则（支持命名捕获组），变量可在 `server_url` / `rename` / `headers` / `notify.extra_info` 里用；内置变量有 `{time}`（东八区 `yyyyMMdd-HHmmss`）、`{original_url}`（被抓到的原始 URL）、`{random}`（9 位小写十六进制随机串）
 - `file.type` 决定搬请求体还是响应体；原流量照常转发，拷贝出来的 body 交给 goroutine 异步 POST
 - `file.rename` 非空时发 `multipart/form-data`（字段名 `file`），同时补 `X-Filename` / `X-File-Name` 头；为空则发裸 body
 - `size_limit.min/max`：0 表示该端不限；命中 URL 但大小不符会写一条「跳过」日志并继续试下一条规则
