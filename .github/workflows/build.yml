@@ -35,12 +35,8 @@ jobs:
           export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
           SDKMGR="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           yes | "$SDKMGR" --licenses > /dev/null || true
-          "$SDKMGR" --install "platforms;android-37.0" "build-tools;35.0.0" "ndk;27.2.12479018"
-          PLATFORMS="$ANDROID_HOME/platforms"
-          # AGP 8.7 looks for platforms/android-37 while the current SDK channel ships
-          # the platform as android-37.0, so expose it under the expected name.
-          [ -d "$PLATFORMS/android-37" ] || ln -s "$PLATFORMS/android-37.0" "$PLATFORMS/android-37"
-          ls -l "$PLATFORMS"
+          "$SDKMGR" --channel=3 --install "platforms;android-37" "build-tools;35.0.0" "ndk;27.2.12479018"
+          ls -l "$ANDROID_HOME/platforms"
 
       - name: Build Go core
         run: |
