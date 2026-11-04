@@ -412,7 +412,10 @@ func asyncHandleFlow(f *proxy.Flow) {
 			body := append([]byte(nil), payload...)
 			asyncLogf("命中「%s」%s（%d 字节，来自%s）", rule.name, url, len(body), bodySource(rule.fromRequest))
 			go rule.upload(body, vars)
-			return
+			// 一份配置里只要有一个 match_url 命中就够了，跳出 pattern 循环；
+			// 但不要 return —— 同一个 URL 允许被多份配置同时命中，
+			// 这样一个包可以既传外部服务又传自己的服务器。
+			break
 		}
 	}
 }

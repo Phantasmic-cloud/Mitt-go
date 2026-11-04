@@ -139,6 +139,7 @@ YAML 由 Kotlin 读成字符串，一次性打包下发：
 - 顶层 `enable` 字段已废弃：启用状态由 App 内每份配置的开关决定（存 SharedPreferences `mitt_go_async_upload`），新导入的配置默认关闭
 - `file.rename` 非空时发 `multipart/form-data`（字段名 `file`），同时补 `X-Filename` / `X-File-Name` 头；为空则发裸 body
 - `size_limit.min/max`：0 表示该端不限；命中 URL 但大小不符会写一条「跳过」日志并继续试下一条规则
+- 同一个 URL 可以同时被多份配置命中：各配置独立上传（比如一个包既传第三方服务又传自建服务器），一份配置内部只要有一条 `match_url` 命中就只传一次
 - `max_retries`：失败重试到上限后，通知里追加「重试次数达到上限」
 - 通知：标题 `Mitt-go`，正文三行（`[旁路上传] 配置名` / 状态码 + 从 JSON 里抽的 `detail|message` / `extra_info`），用 `setWhen(timestamp)` 让系统显示相对时间
 - 大于 2 MB 的流式响应没有完整 body，此时会上传空内容（已知限制）

@@ -6,11 +6,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/lqqyt2423/go-mitmproxy/proxy"
 	"gopkg.in/yaml.v3"
 )
 
@@ -354,5 +357,77 @@ upload:
 	}
 	if len(bodies) != 1 {
 		t.Fatalf("expected 1 request, got %d", len(bodies))
+	}
+}
+
+// 同一个 URL 允许被多份配置命中：一个包同时传两个服务器。
+func TestAsyncMultiRuleSameURL(t *testing.T) {
+	resetAsyncQueue()
+	var mu sync.Mutex
+	hits := map[string]int{}
+	makeServer := func(tag string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			hits[tag]++
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"detail":"ok"}`))
+		}))
+	}
+	serverA := makeServer("A")
+	defer serverA.Close()
+	serverB := makeServer("B")
+	defer serverB.Close()
+
+	makeRule := func(name, serverURL string) asyncRule {
+		raw := fmt.Sprintf(`
+name: %s
+match_url:
+  - '^https://example\.com/api/suite$'
+upload:
+  server_url: %s
+  file:
+    type: Response Body
+`, name, serverURL)
+		var cfg asyncYamlConfig
+		if err := yaml.Unmarshal([]byte(raw), &cfg); err != nil {
+			t.Fatalf("yaml %s: %v", name, err)
+		}
+		rule, err := compileAsyncRule(cfg)
+		if err != nil {
+			t.Fatalf("compile %s: %v", name, err)
+		}
+		return rule
+	}
+
+	asyncStore.Store(&asyncSet{enabled: true, rules: []asyncRule{
+		makeRule("外部A", serverA.URL+"/upload"),
+		makeRule("自建", serverB.URL+"/upload"),
+	}})
+	defer asyncStore.Store(&asyncSet{})
+
+	u, err := url.Parse("https://example.com/api/suite")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	asyncHandleFlow(&proxy.Flow{
+		Request:  &proxy.Request{Method: http.MethodPost, URL: u},
+		Response: &proxy.Response{Body: []byte(strings.Repeat("x", 4096))},
+	})
+
+	for i := 0; i < 200; i++ {
+		mu.Lock()
+		done := hits["A"] == 1 && hits["B"] == 1
+		mu.Unlock()
+		if done {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	mu.Lock()
+	gotA, gotB := hits["A"], hits["B"]
+	mu.Unlock()
+	if gotA != 1 || gotB != 1 {
+		t.Fatalf("两份配置都应该收到同一个包，实际 A=%d B=%d", gotA, gotB)
 	}
 }
