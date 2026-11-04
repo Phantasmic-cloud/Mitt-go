@@ -14,6 +14,7 @@ package mittgo
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -51,6 +52,8 @@ type asyncYamlConfig struct {
 				Min int `yaml:"min"`
 				Max int `yaml:"max"`
 			} `yaml:"size_limit"`
+			// 超过 chunk_size 的 body 会自动切片上传；不写这段就是整块发。
+			ChunkUpload asyncChunkConfig `yaml:"chunk_upload"`
 		} `yaml:"file"`
 		Timeout    int `yaml:"timeout"`
 		MaxRetries int `yaml:"max_retries"`
@@ -71,6 +74,7 @@ type asyncRule struct {
 	rename      string
 	minSize     int
 	maxSize     int
+	chunkSize   int
 	timeout     time.Duration
 	maxRetries  int
 	notify      bool
@@ -179,10 +183,6 @@ func SetAsyncUpload(payloadJSON string) string {
 				asyncErrorf("第 %d 份配置解析失败：%v", index+1, err)
 				continue
 			}
-			if !cfg.Enable {
-				asyncLogf("配置「%s」enable=false，已跳过", cfg.Name)
-				continue
-			}
 			rule, err := compileAsyncRule(cfg)
 			if err != nil {
 				asyncErrorf("配置「%s」无效：%v", cfg.Name, err)
@@ -195,6 +195,27 @@ func SetAsyncUpload(payloadJSON string) string {
 	asyncStore.Store(set)
 	asyncLogf("旁路上传总开关=%v，生效规则=%d", set.enabled, len(set.rules))
 	return ""
+}
+
+// asyncChunkConfig 对应 YAML 里的 upload.file.chunk_upload。
+type asyncChunkConfig struct {
+	Enable    bool `yaml:"enable"`
+	ChunkSize int  `yaml:"chunk_size"`
+}
+
+// asyncChunkSize 归一化分片配置：没开就是 0（整块发），开了默认 1 MiB，下限 64 KiB。
+func asyncChunkSize(cfg asyncChunkConfig) int {
+	if !cfg.Enable {
+		return 0
+	}
+	size := cfg.ChunkSize
+	if size <= 0 {
+		size = 1 << 20
+	}
+	if size < 64<<10 {
+		size = 64 << 10
+	}
+	return size
 }
 
 func compileAsyncRule(cfg asyncYamlConfig) (asyncRule, error) {
@@ -216,8 +237,8 @@ func compileAsyncRule(cfg asyncYamlConfig) (asyncRule, error) {
 			continue
 		}
 		// (?<name>...) 是 Go 1.22+ 才认的写法，统一换成老式 (?P<name>...)。
-pattern = strings.ReplaceAll(pattern, "(?<", "(?P<")
-re, err := regexp.Compile(pattern)
+		pattern = strings.ReplaceAll(pattern, "(?<", "(?P<")
+		re, err := regexp.Compile(pattern)
 		if err != nil {
 			return asyncRule{}, fmt.Errorf("match_url %q 无法编译：%w", pattern, err)
 		}
@@ -240,6 +261,7 @@ re, err := regexp.Compile(pattern)
 		rename:      strings.TrimSpace(cfg.Upload.File.Rename),
 		minSize:     maxInt(cfg.Upload.File.SizeLimit.Min, 0),
 		maxSize:     maxInt(cfg.Upload.File.SizeLimit.Max, 0),
+		chunkSize:   asyncChunkSize(cfg.Upload.File.ChunkUpload),
 		timeout:     time.Duration(timeout) * time.Second,
 		maxRetries:  maxInt(cfg.Upload.MaxRetries, 0),
 		notify:      cfg.Notify.Enabled,
@@ -269,6 +291,23 @@ func normalizeExtraInfo(value any) string {
 	default:
 		return strings.TrimSpace(fmt.Sprint(typed))
 	}
+}
+
+// randomToken 返回 n 位小写十六进制随机串。
+func randomToken(n int) string {
+	const hex = "0123456789abcdef"
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		seed := time.Now().UnixNano()
+		for i := range buf {
+			buf[i] = hex[byte(seed>>uint(i*4))&0x0f]
+		}
+		return string(buf)
+	}
+	for i := range buf {
+		buf[i] = hex[buf[i]&0x0f]
+	}
+	return string(buf)
 }
 
 func maxInt(value, minimum int) int {
@@ -352,6 +391,9 @@ func asyncHandleFlow(f *proxy.Flow) {
 				vars[name] = match[index]
 			}
 			vars["time"] = beijingTime().Format("20060102-150405")
+			// 内置变量：原始请求 URL，以及 9 位随机串（有些接口要求每次上传带唯一 ID）。
+			vars["original_url"] = url
+			vars["random"] = randomToken(9)
 
 			var payload []byte
 			if rule.fromRequest {
@@ -370,7 +412,10 @@ func asyncHandleFlow(f *proxy.Flow) {
 			body := append([]byte(nil), payload...)
 			asyncLogf("命中「%s」%s（%d 字节，来自%s）", rule.name, url, len(body), bodySource(rule.fromRequest))
 			go rule.upload(body, vars)
-			return
+			// 一份配置里只要有一个 match_url 命中就够了，跳出 pattern 循环；
+			// 但不要 return —— 同一个 URL 允许被多份配置同时命中，
+			// 这样一个包可以既传外部服务又传自己的服务器。
+			break
 		}
 	}
 }
@@ -462,7 +507,33 @@ func (r asyncRule) notifyUser(vars map[string]string, detail string) {
 	asyncLogf("通知：%s", strings.ReplaceAll(body, "\n", " "))
 }
 
+// post 按需切片，把每片交给 postOnce；未开启分片时就是一次普通请求。
 func (r asyncRule) post(client *http.Client, target, filename string, body []byte, vars map[string]string) (int, string, error) {
+	if r.chunkSize <= 0 || len(body) <= r.chunkSize {
+		return r.postOnce(client, target, filename, body, vars, 0, 1)
+	}
+	total := (len(body) + r.chunkSize - 1) / r.chunkSize
+	status, message := 0, ""
+	for index := 0; index < total; index++ {
+		start := index * r.chunkSize
+		end := start + r.chunkSize
+		if end > len(body) {
+			end = len(body)
+		}
+		code, msg, err := r.postOnce(client, target, filename, body[start:end], vars, index, total)
+		if err != nil {
+			return code, msg, fmt.Errorf("分片 %d/%d: %w", index+1, total, err)
+		}
+		if code != http.StatusOK {
+			return code, msg, fmt.Errorf("分片 %d/%d: HTTP %d", index+1, total, code)
+		}
+		status, message = code, msg
+	}
+	asyncLogf("「%s」分 %d 片上传完成", r.name, total)
+	return status, message, nil
+}
+
+func (r asyncRule) postOnce(client *http.Client, target, filename string, body []byte, vars map[string]string, index, total int) (int, string, error) {
 	// 有文件名就走 multipart/form-data：很多服务端
 	// 是从 multipart 的 filename 里取名字的，裸 body 只能读到默认值。
 	var reader io.Reader
@@ -505,6 +576,10 @@ func (r asyncRule) post(client *http.Client, target, filename string, body []byt
 				hasContentType = true
 			}
 		}
+	}
+	if r.chunkSize > 0 {
+		request.Header.Set("X-Chunk-Index", strconv.Itoa(index))
+		request.Header.Set("X-Total-Chunks", strconv.Itoa(total))
 	}
 	if multipartType != "" {
 		request.Header.Set("Content-Type", multipartType)

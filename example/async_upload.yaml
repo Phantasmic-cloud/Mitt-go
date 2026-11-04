@@ -1,23 +1,29 @@
-enable: true
+# 旁路上传配置示例。每份配置在 App 里单独开关，导入后默认关闭；
+# 顶层不需要 enable 字段（写了也没用）。
 name: 演示例子
 match_url:
-  - "^https://example\\.com/api/user/(?<user_id>\\d+)/example(?:\\?.*)?$"        #user_id变成可用参数，{time}内置
+  # 命名捕获组会变成变量，可在 server_url / rename / headers / extra_info 里用
+  - '^https://example\.com/api/user/(?<user_id>\d+)/example(?:\?.*)?$'
 upload:
   server_url: https://api.example.com/api/en/{user_id}/upload
-  tls_skip_verify: false   #不跳过在上传该服务器时HTTPS的ssl证书校验；http的无需在意此项
+  tls_skip_verify: false
   headers:
     - Content-Type: application/octet-stream
     - User-Agent: Mitt/2.0
-    - Authorization: Bearer 删掉此处文字填上你的token
+    - Authorization: Bearer <token>
+    # 内置变量：{time}=东八区 yyyyMMdd-HHmmss，{original_url}=命中的原始 URL，
+    # {random}=9 位小写十六进制随机串
   file:
-    type: Response Body    #响应体，可更改为请求体
-    rename: en-{user_id}-example-{time}.bin   #将响应体重命名
-    size_limit:          #只有大小在下面区间内的才上传；省掉 min 或 max 表示那一端不限，都不填就不限制
-      min: 51200         #50 KB
-      max: 2097152       #2 MB
-  timeout: 10       #单次上传的超时
-  max_retries: 0    #失败后不重试
+    type: Response Body      # 也可以写 Request Body
+    rename: en-{user_id}-example-{time}.bin   # 留空则发裸 body
+    size_limit:              # 只有大小落在区间内的才上传；缺省一端表示不限
+      min: 51200
+      max: 2097152
+    chunk_upload:            # 可选：超过 chunk_size 自动切片
+      enable: false
+      chunk_size: 1048576
+  timeout: 10
+  max_retries: 0
 notify:
   enabled: true
-  extra_info: {user_id} 
-  #最终效果是使用安卓的notify api（需要用户授权通知权限）发送一条消息，“[旁路上传] 演示例子 200(上传成功！) 1234567890”，其中“演示例子”来着最顶层的“name”，“200”来自本次HTTP的响应结果，“上传成功！”来着服务器返回的信息，服务器没返回则不显示。还有另外一种效果就是“[旁路上传] 演示例子 429(rate_limit_exceeded) 重试次数达到上限 1234567890”
+  extra_info: '{user_id}'

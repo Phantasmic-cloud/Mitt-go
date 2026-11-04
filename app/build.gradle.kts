@@ -21,6 +21,11 @@ val envKeystore = System.getenv("MITT_KEYSTORE")
 val hasReleaseKeystore =
     !envKeystore.isNullOrBlank() || !releaseKeystoreProps.getProperty("storeFile").isNullOrBlank()
 
+/**
+ * debug 和 release 共用同一把签名：本地编译出来的调试包能直接覆盖 GitHub 上的发行包，
+ * 反过来也能盖回去，不用每次卸载重装。没有 release keystore 时退回 AGP 的 debug key。
+ */
+val signingConfigName = if (hasReleaseKeystore) "release" else "debug"
 
 android {
     namespace = "com.phantasmic.mitt.go"
@@ -30,11 +35,29 @@ android {
         applicationId = "com.phantasmic.mitt.go"
         minSdk = 33
         targetSdk = 36
-        versionCode = 78
-        versionName = "2.0.3"
+        versionCode = 82
+        versionName = "2.0.7"
 
         ndk {
             abiFilters += "arm64-v8a"
+        }
+    }
+
+    signingConfigs {
+        if (hasReleaseKeystore) {
+            create("release") {
+                if (!envKeystore.isNullOrBlank()) {
+                    storeFile = file(envKeystore)
+                    storePassword = System.getenv("MITT_KEYSTORE_PASSWORD")
+                    keyAlias = System.getenv("MITT_KEY_ALIAS") ?: "mittgo"
+                    keyPassword = System.getenv("MITT_KEY_PASSWORD") ?: storePassword
+                } else {
+                    storeFile = rootProject.file(releaseKeystoreProps.getProperty("storeFile"))
+                    storePassword = releaseKeystoreProps.getProperty("storePassword")
+                    keyAlias = releaseKeystoreProps.getProperty("keyAlias")
+                    keyPassword = releaseKeystoreProps.getProperty("keyPassword") ?: storePassword
+                }
+            }
         }
     }
 
@@ -45,25 +68,10 @@ android {
             // Compose 的重组是纯 Kotlin 执行，受影响最大。关掉 debuggable 后
             // 仍然是 debug 变体（不跑 R8、构建快），但按正常方式做 AOT 编译。
             isDebuggable = false
+            signingConfig = signingConfigs.getByName(signingConfigName)
         }
         release {
-            signingConfig = if (hasReleaseKeystore) {
-                signingConfigs.create("release") {
-                    if (!envKeystore.isNullOrBlank()) {
-                        storeFile = file(envKeystore)
-                        storePassword = System.getenv("MITT_KEYSTORE_PASSWORD")
-                        keyAlias = System.getenv("MITT_KEY_ALIAS") ?: "mittgo"
-                        keyPassword = System.getenv("MITT_KEY_PASSWORD") ?: storePassword
-                    } else {
-                        storeFile = rootProject.file(releaseKeystoreProps.getProperty("storeFile"))
-                        storePassword = releaseKeystoreProps.getProperty("storePassword")
-                        keyAlias = releaseKeystoreProps.getProperty("keyAlias")
-                        keyPassword = releaseKeystoreProps.getProperty("keyPassword") ?: storePassword
-                    }
-                }
-            } else {
-                signingConfigs.getByName("debug")
-            }
+            signingConfig = signingConfigs.getByName(signingConfigName)
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
