@@ -18,8 +18,9 @@ if [ ! -d "$DST" ]; then
     exit 1
 fi
 
-# tar 管道比 rsync 少一个依赖，--exclude 掉自己。
-tar -C "$SRC" --exclude=publish.sh -cf - . | tar -C "$DST" -xf -
+# tar 管道比 rsync 少一个依赖，--exclude 掉自己；目标目录通常是个 clone，
+# 仓库元数据（.git）不能跟着铺过去。
+tar -C "$SRC" --exclude=.git --exclude=publish.sh -cf - . | tar -C "$DST" -xf -
 
 echo "copied GitHub/ into $DST"
 ls -A "$DST"
