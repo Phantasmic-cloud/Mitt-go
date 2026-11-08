@@ -1,17 +1,10 @@
 package com.phantasmic.mitt.go
 
-import android.content.ContentValues
 import android.content.Context
-import android.net.Uri
-import android.os.Environment
-import android.provider.MediaStore
 import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 enum class LogLevel(val label: String) {
     DEBUG("DEBUG"),
@@ -46,10 +39,8 @@ object MittLog {
     val entries: StateFlow<List<LogEntry>> = _entries.asStateFlow()
 
     private val lock = Any()
-    private val clock = SimpleDateFormat("HH:mm:ss", Locale.US)
-    private val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
 
-    fun timeOf(time: Long): String = synchronized(clock) { clock.format(Date(time)) }
+    fun timeOf(time: Long): String = TimeFmt.clock(time)
 
     fun debug(tag: String, message: () -> String) {
         if (!debugEnabled) return
@@ -88,26 +79,16 @@ object MittLog {
     }
 
     /** 导出到系统下载目录，返回文件名；失败返回 null。 */
-    fun export(context: Context): String? = runCatching {
-        val name = "Mitt-go_log_${synchronized(stamp) { stamp.format(Date()) }}.txt"
+    fun export(context: Context): String? {
+        val name = "Mitt-go_log_${TimeFmt.fileStamp()}.txt"
         val body = buildString {
             appendLine("# Mitt-go ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
-            appendLine("# exported ${synchronized(clock) { clock.format(Date()) }}")
+            appendLine("# exported ${TimeFmt.clock(System.currentTimeMillis())}")
             appendLine()
             _entries.value.forEach { appendLine(it.format()) }
         }
-        val values = ContentValues().apply {
-            put(MediaStore.Downloads.DISPLAY_NAME, name)
-            put(MediaStore.Downloads.MIME_TYPE, "text/plain")
-            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Mitt-go")
-        }
-        val resolver = context.contentResolver
-        val uri: Uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-            ?: return@runCatching null
-        resolver.openOutputStream(uri)?.use { it.write(body.toByteArray()) }
-            ?: return@runCatching null
-        name
-    }.getOrNull()
+        return DownloadStore.save(context, name, "text/plain", body.toByteArray(Charsets.UTF_8))
+    }
 
     private fun add(level: LogLevel, tag: String, message: String) {
         if (level == LogLevel.DEBUG && !debugEnabled) return

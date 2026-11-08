@@ -2,15 +2,12 @@ package com.phantasmic.mitt.go
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animate
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -40,6 +37,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -48,46 +46,34 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.rememberGraphicsLayer
-import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
-import androidx.compose.ui.input.nestedscroll.NestedScrollSource
-import androidx.compose.ui.input.nestedscroll.nestedScroll
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlinx.coroutines.Dispatchers
+import com.phantasmic.mitt.go.ui.LocalPageBackdrop
+import com.phantasmic.mitt.go.ui.glassSurface
+import com.phantasmic.mitt.go.ui.pageBackdrop
+import com.phantasmic.mitt.go.ui.rememberPageBackdrop
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.isActive
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.blur.Backdrop
-import top.yukonga.miuix.kmp.blur.layerBackdrop
-import top.yukonga.miuix.kmp.blur.rememberLayerBackdrop
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 
@@ -99,6 +85,12 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 
 
+
+/** 抓包列表顶部给三点按钮让出的高度（按钮 8dp 上边距 + 44dp 高 + 4dp 间隔）。 */
+private val CAPTURE_LIST_TOP_GAP = 56.dp
+
+/** 抓包 FAB 呼吸环一圈的时长。 */
+private const val PULSE_PERIOD_NANOS = 1_600_000_000L
 
 enum class CaptureDisplayMode(val label: String) {
     URL("完整 URL"),
@@ -112,8 +104,6 @@ class CaptureUiController {
     var query by mutableStateOf("")
     var displayMode by mutableStateOf(CaptureDisplayMode.URL)
     var highlightEnabled by mutableStateOf(false)
-    /** 列表是否在滚动/惯性滑动。 */
-    var listScrolling by mutableStateOf(false)
     /** 菜单点“清空记录”时自增。 */
     var clearTick by mutableIntStateOf(0)
     private var consumedTick = 0
@@ -127,7 +117,6 @@ class CaptureUiController {
 fun CapturePage(
     runtime: ProxyRuntimeStatus,
     settings: MittSettings,
-    backdrop: Backdrop?,
     topInset: Dp,
     bottomInset: Dp,
     controller: CaptureUiController,
@@ -137,13 +126,10 @@ fun CapturePage(
     onSelectHost: (String) -> Unit,
 ) {
     val colors = MiuixTheme.colorScheme
-    // 搜索框的玻璃必须用“只取列表”的独立 backdrop。
+    // 搜索框/FAB 的玻璃必须用“只取列表”的独立 backdrop。
     // 直接用页面级 backdrop 的话，搜索框会在它自己取景的图层里绘制，
     // hwui 的 RenderNode 树会成环，prepareTreeImpl 递归到栈溢出（SIGSEGV）。
-    val listBackdrop = rememberLayerBackdrop(graphicsLayer = rememberGraphicsLayer()) {
-        drawRect(colors.surface)
-        drawContent()
-    }
+    val listBackdrop = rememberPageBackdrop()
     val records by CaptureStore.recordFlow.collectAsState()
     // 看过的记录：列表里整行压暗。
     val visitedIds by CaptureStore.visitedFlow.collectAsState()
@@ -151,41 +137,6 @@ fun CapturePage(
     val mode = controller.displayMode
     val running = runtime.running
     val listState = rememberLazyListState()
-    // 下拉余量：列表已经在最顶端时继续往下拽，内容整体下移，最多到三点按钮下面。
-    val density = LocalDensity.current
-    val pullPx = remember { mutableFloatStateOf(0f) }
-    val pullLimitPx = with(density) { 56.dp.toPx() }
-    val pullConnection = remember(listState, pullLimitPx) {
-        object : NestedScrollConnection {
-            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                if (source == NestedScrollSource.Drag && available.y < 0f && pullPx.floatValue > 0f) {
-                    val delta = (-available.y).coerceAtMost(pullPx.floatValue)
-                    pullPx.floatValue -= delta
-                    return Offset(0f, -delta)
-                }
-                return Offset.Zero
-            }
-            override fun onPostScroll(
-                consumed: Offset,
-                available: Offset,
-                source: NestedScrollSource,
-            ): Offset {
-                if (source == NestedScrollSource.Drag && available.y > 0f && !listState.canScrollBackward) {
-                    val before = pullPx.floatValue
-                    pullPx.floatValue = (before + available.y).coerceAtMost(pullLimitPx)
-                    // 全部吃掉：不让父层再做拉伸/微光，位移完全由这段留白承担。
-                    return Offset(0f, available.y)
-                }
-                return Offset.Zero
-            }
-            // 松手后不回弹：拉到哪儿就停在哪儿，只有再往上滑才会缩回去。
-        }
-    }
-    LaunchedEffect(listState) {
-        snapshotFlow { listState.isScrollInProgress }.collect { scrolling ->
-            controller.listScrolling = scrolling
-        }
-    }
     LaunchedEffect(controller.clearTick) {
         if (!controller.consumeClear()) return@LaunchedEffect
         CaptureStore.clear()
@@ -208,95 +159,92 @@ fun CapturePage(
     val domains = remember(filtered, mode) {
         if (mode == CaptureDisplayMode.DOMAIN) groupByHost(filtered) else emptyList()
     }
-    Box(Modifier.fillMaxSize()) {
-        Column(
-            Modifier
-                .fillMaxSize()
-                .then(if (backdrop == null) Modifier else Modifier.layerBackdrop(listBackdrop)),
-        ) {
-            runtime.error?.let { message -> RuntimeErrorBanner(message, topInset) }
-            val isEmpty = if (mode == CaptureDisplayMode.DOMAIN) domains.isEmpty() else filtered.isEmpty()
-            // 搜索框只是盖在列表上的一层浮窗：它不改变列表的布局，也不裁剪列表。
-            // 列表任何时候都能滑到状态栏（与其重合）和三点按钮下面。
-            if (isEmpty) {
-                EmptyHint(
-                    running = running,
-                    starting = runtime.starting,
-                    filtered = records.isNotEmpty(),
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(top = topInset + 4.dp),
-                )
-            } else {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .nestedScroll(pullConnection),
-                    contentPadding = PaddingValues(
-                        top = topInset + 4.dp,
-                        bottom = bottomInset + 110.dp,
-                    ),
-                ) {
-                    item(key = "pull-space", contentType = "pull") {
-                        Spacer(Modifier.height(with(density) { pullPx.floatValue.toDp() }))
-                    }
-                    if (mode == CaptureDisplayMode.DOMAIN) {
-                        items(items = domains, key = { "d-" + it.host }) { group ->
-                            val onClick = remember(group.host) { { onSelectHost(group.host) } }
-                            DomainRow(group = group, onClick = onClick)
-                        }
-                    } else {
-                        items(items = filtered, key = { it.id }, contentType = { "capture" }) { item ->
-                            val onClick = remember(item.id) {
-                                {
-                                    CaptureStore.markVisited(item.id)
-                                    onSelect(item)
+    CompositionLocalProvider(LocalPageBackdrop provides listBackdrop) {
+        Box(Modifier.fillMaxSize()) {
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .pageBackdrop(listBackdrop),
+            ) {
+                runtime.error?.let { message -> RuntimeErrorBanner(message, topInset) }
+                val isEmpty = if (mode == CaptureDisplayMode.DOMAIN) domains.isEmpty() else filtered.isEmpty()
+                // 搜索框只是盖在列表上的一层浮窗：它不改变列表的布局，也不裁剪列表。
+                // 列表任何时候都能滑到状态栏（与其重合）和三点按钮下面。
+                if (isEmpty) {
+                    EmptyHint(
+                        running = running,
+                        starting = runtime.starting,
+                        filtered = records.isNotEmpty(),
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(top = topInset + 4.dp),
+                    )
+                } else {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(
+                            // 列表初始位置压在右上角三点按钮下面：
+                            // 按钮 8dp 上边距 + 44dp 高 + 4dp 间隔，不然第一条记录会和按钮齐平。
+                            top = topInset + CAPTURE_LIST_TOP_GAP,
+                            bottom = bottomInset + 110.dp,
+                        ),
+                    ) {
+                        if (mode == CaptureDisplayMode.DOMAIN) {
+                            items(items = domains, key = { "d-" + it.host }) { group ->
+                                val onClick = remember(group.host) { { onSelectHost(group.host) } }
+                                DomainRow(group = group, onClick = onClick)
+                            }
+                        } else {
+                            items(items = filtered, key = { it.id }, contentType = { "capture" }) { item ->
+                                val onClick = remember(item.id) {
+                                    {
+                                        CaptureStore.markVisited(item.id)
+                                        onSelect(item)
+                                    }
                                 }
+                                val accent = remember(item.url, settings.highlightEnabled, settings.highlightRules) {
+                                    highlightColorFor(item.url, settings.highlightRules, settings.highlightEnabled)
+                                }
+                                UrlRow(
+                                    item = item,
+                                    accent = accent,
+                                    onClick = onClick,
+                                    visited = item.id in visitedIds,
+                                )
                             }
-                            val accent = remember(item.url, settings.highlightEnabled, settings.highlightRules) {
-                                highlightColorFor(item.url, settings.highlightRules, settings.highlightEnabled)
-                            }
-                            UrlRow(
-                                item = item,
-                                accent = accent,
-                                onClick = onClick,
-                                visited = item.id in visitedIds,
-                            )
                         }
                     }
                 }
             }
-        }
-        AnimatedVisibility(
-            visible = controller.searchOpen,
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .padding(top = topInset + 8.dp, start = 16.dp, end = 60.dp),
-            enter = fadeIn(tween(140)) + scaleIn(initialScale = 0.94f, animationSpec = tween(160)),
-            exit = fadeOut(tween(120)) + scaleOut(targetScale = 0.96f, animationSpec = tween(120)),
-        ) {
-            SearchCapsule(
-                query = query,
-                onQueryChange = { controller.query = it },
-                onClose = {
-                    controller.searchOpen = false
-                    controller.query = ""
-                },
-                backdrop = if (backdrop == null) null else listBackdrop,
-                modifier = Modifier.fillMaxWidth(),
+            AnimatedVisibility(
+                visible = controller.searchOpen,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = topInset + 8.dp, start = 16.dp, end = 60.dp),
+                enter = fadeIn(tween(140)) + scaleIn(initialScale = 0.94f, animationSpec = tween(160)),
+                exit = fadeOut(tween(120)) + scaleOut(targetScale = 0.96f, animationSpec = tween(120)),
+            ) {
+                SearchCapsule(
+                    query = query,
+                    onQueryChange = { controller.query = it },
+                    onClose = {
+                        controller.searchOpen = false
+                        controller.query = ""
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            CaptureFab(
+                running = running,
+                starting = runtime.starting,
+                onClick = { if (running) onStop() else onStart() },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .navigationBarsPadding()
+                    .padding(end = 22.dp, bottom = 128.dp),
             )
         }
-        CaptureFab(
-            running = running,
-            starting = runtime.starting,
-            backdrop = if (backdrop == null) null else listBackdrop,
-            onClick = { if (running) onStop() else onStart() },
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .navigationBarsPadding()
-                .padding(end = 22.dp, bottom = 128.dp),
-        )
     }
 }
 @Composable
@@ -304,7 +252,6 @@ private fun SearchCapsule(
     query: String,
     onQueryChange: (String) -> Unit,
     onClose: () -> Unit,
-    backdrop: Backdrop?,
     modifier: Modifier = Modifier,
 ) {
     val colors = MiuixTheme.colorScheme
@@ -313,15 +260,9 @@ private fun SearchCapsule(
         modifier = modifier
             .height(44.dp)
             .clip(shape)
-            .glassSurface(
-                backdrop = backdrop,
-                shape = shape,
-                container = colors.surfaceContainer.copy(
-                    alpha = if (backdrop == null) 0.92f else 0.55f,
-                ),
-            )
+            .glassSurface(shape = shape)
             .border(0.8.dp, colors.outline.copy(alpha = 0.35f), shape)
-            .padding(start = 14.dp, end = 10.dp),
+            .padding(start = 14.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         SearchGlyph(color = colors.onSurfaceSecondary)
@@ -343,51 +284,22 @@ private fun SearchCapsule(
                 modifier = Modifier.fillMaxWidth(),
             )
         }
-        if (query.isNotEmpty()) {
-            Text(
-                text = "✕",
-                fontSize = 13.sp,
-                color = colors.onSurfaceSecondary,
-                modifier = Modifier
-                    .clip(CircleShape)
-                    .clickable { onQueryChange("") }
-                    .padding(horizontal = 6.dp, vertical = 2.dp),
-            )
-            Spacer(Modifier.width(4.dp))
-        }
-        CloseGlyph(color = colors.onSurfaceSecondary, onClick = onClose)
-    }
-}
-@Composable
-private fun StatusLine(settings: MittSettings) {
-    val colors = MiuixTheme.colorScheme
-    val ports = buildString {
-        append("HTTP ").append(settings.httpPort)
-        if (settings.socksEnabled) append(" · SOCKS ").append(settings.socksPort)
-        if (settings.proxyMode == ProxyMode.VPN_TUN) append(" · TUN ").append(settings.tunnelPort)
-    }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 18.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
+        // 一个 X 管两件事：有内容先清空，内容空了再点才关搜索。
+        // 触摸区域撑到整颗胶囊高度，16dp 的图形直接当按钮太小了。
         Box(
             Modifier
-                .size(7.dp)
-                .background(Color(0xFF3AA86B), CircleShape),
-        )
-        Spacer(Modifier.width(8.dp))
-        Text(text = "抓包中", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = colors.onSurface)
-        Spacer(Modifier.width(8.dp))
-        Text(
-            text = ports,
-            fontSize = 11.sp,
-            fontFamily = FontFamily.Monospace,
-            color = colors.onSurfaceSecondary,
-        )
+                .size(38.dp)
+                .clip(CircleShape)
+                .clickable {
+                    if (query.isNotEmpty()) onQueryChange("") else onClose()
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            CloseGlyph(color = colors.onSurfaceSecondary)
+        }
     }
 }
+
 @Composable
 private fun RuntimeErrorBanner(message: String, topInset: Dp) {
     Box(
@@ -531,7 +443,7 @@ fun UrlRow(
                     color = typeColor(item.contentType),
                 )
                 Text(
-                    text = " · ${compactSize(item.size)}",
+                    text = " · ${formatSize(item.size, compact = true)}",
                     fontSize = 11.sp,
                     fontFamily = FontFamily.Monospace,
                     maxLines = 1,
@@ -598,118 +510,128 @@ private fun DomainRow(group: DomainGroup, onClick: () -> Unit) {
         )
     }
 }
+/**
+ * 抓包开关：玻璃圆钮 + 状态色内芯。
+ *
+ * 不带文字：一级页本来就是纯图标语言（底栏、搜索框、三点按钮都没有文案），
+ * 加一行说明反而显得笨重。状态靠颜色和图形表达就够了。
+ *
+ * 空闲 = 绿芯 + 播放三角；抓包中 = 红芯 + 停止方块 + 玻璃环里的呼吸圈；
+ * 启动中 = 绿芯里转圈。呼吸圈只在抓包时按 60fps 手推（[withFrameNanos]），
+ * 停止后一帧都不跑，别改回常驻无限动画。
+ */
 @Composable
 private fun CaptureFab(
     running: Boolean,
     starting: Boolean,
-    backdrop: Backdrop?,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    // 空闲绿、抓包红，颜色和“飞起来/停下来”用同一段节奏过渡。
-    val tint by animateColorAsState(
+    val colors = MiuixTheme.colorScheme
+    // 空闲绿、抓包中红：内芯、呼吸圈、描边、投影都跟着这一份颜色走。
+    val accent by animateColorAsState(
         targetValue = if (running) Color(0xFFD64545) else Color(0xFF3FA75B),
         animationSpec = tween(durationMillis = 420),
-        label = "fabTint",
+        label = "captureFabAccent",
     )
-    val flight by animateFloatAsState(
-        targetValue = if (running) 1f else 0f,
-        animationSpec = tween(durationMillis = 480),
-        label = "fabFlight",
+    val borderColor by animateColorAsState(
+        targetValue = if (running) {
+            accent.copy(alpha = 0.55f)
+        } else {
+            colors.outline.copy(alpha = 0.28f)
+        },
+        animationSpec = tween(durationMillis = 420),
+        label = "captureFabBorder",
     )
-    val drift = rememberInfiniteTransition(label = "fab")
-    val bob by drift.animateFloat(
-        initialValue = -2.4f,
-        targetValue = 2.4f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1500, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "bob",
+    // 按下轻微缩小，和 ui/Glass.kt 的 CircleGlassButton 同一套手感（玻璃上叠 ripple 不好看）。
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val pressScale by animateFloatAsState(
+        targetValue = if (pressed) 0.94f else 1f,
+        animationSpec = spring(stiffness = 900f),
+        label = "captureFabPress",
     )
-    val sway by drift.animateFloat(
-        initialValue = -8f,
-        targetValue = 8f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 2200, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "sway",
-    )
+    // 呼吸圈进度 0→1 循环。抓包中才推，停止后停在 0、不再要帧。
+    val pulse = remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(running) {
+        if (!running) return@LaunchedEffect
+        val origin = withFrameNanos { it }
+        while (isActive) {
+            val now = withFrameNanos { it }
+            pulse.floatValue = ((now - origin) % PULSE_PERIOD_NANOS) / PULSE_PERIOD_NANOS.toFloat()
+        }
+    }
     Box(
         modifier = modifier
-            .size(58.dp)
-            // 质感：同色投影 + 球面高光 + 玻璃/半透明，
-            // 玻璃和底栏、搜索框走的是同一个 glassSurface。
+            .size(76.dp)
             .shadow(
-                elevation = 14.dp,
+                elevation = 15.dp,
                 shape = CircleShape,
                 clip = false,
-                ambientColor = tint.copy(alpha = 0.55f),
-                spotColor = tint.copy(alpha = 0.55f),
+                ambientColor = accent.copy(alpha = 0.35f),
+                spotColor = accent.copy(alpha = 0.35f),
             )
+            .graphicsLayer {
+                scaleX = pressScale
+                scaleY = pressScale
+            }
             .clip(CircleShape)
-            .glassSurface(
-                backdrop = backdrop,
-                shape = CircleShape,
-                container = tint.copy(alpha = if (backdrop == null) 0.92f else 0.62f),
-            )
-            .clickable(enabled = !starting, onClick = onClick),
+            // 磨砂玻璃外环：内芯 52dp，外圈 76dp，中间 12dp 是呼吸圈的跑道。
+            .glassSurface(shape = CircleShape)
+            .border(1.dp, borderColor, CircleShape)
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                enabled = !starting,
+                onClick = onClick,
+            ),
         contentAlignment = Alignment.Center,
     ) {
-        // 球面高光：顶部亮、底部略暗
+        if (running) {
+            Canvas(Modifier.fillMaxSize()) {
+                val progress = pulse.floatValue
+                drawCircle(
+                    color = accent.copy(alpha = 0.42f * (1f - progress)),
+                    radius = 26.dp.toPx() + 8.5.dp.toPx() * progress,
+                    style = Stroke(width = 2.4.dp.toPx()),
+                )
+            }
+        }
         Box(
             Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        listOf(
-                            Color.White.copy(alpha = 0.22f),
-                            Color.Transparent,
-                            Color.Black.copy(alpha = 0.10f),
+                .size(52.dp)
+                .clip(CircleShape)
+                .background(accent),
+            contentAlignment = Alignment.Center,
+        ) {
+            // 球面高光：上亮下暗，内芯才有点体积感。
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(
+                                Color.White.copy(alpha = 0.22f),
+                                Color.Transparent,
+                                Color.Black.copy(alpha = 0.10f),
+                            ),
                         ),
                     ),
-                ),
-        )
-        if (starting) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(22.dp),
-                color = Color.White,
-                strokeWidth = 2.dp,
             )
-        } else {
-            Canvas(
-                Modifier
-                    .size(28.dp)
-                    .graphicsLayer {
-                        // 静止时幅度为 0，起飞后开始上下飘 + 轻微摇摆。
-                        translationY = bob.dp.toPx() * flight
-                        rotationZ = sway * flight
-                    },
-            ) {
-                // 和悬浮底栏“抓包”用的是同一组坐标的纸飞机
-                val w = size.width
-                val h = size.height
-                val stroke = 1.9.dp.toPx()
-                val plane = Path().apply {
-                    moveTo(w * 0.08f, h * 0.50f)
-                    lineTo(w * 0.92f, h * 0.12f)
-                    lineTo(w * 0.62f, h * 0.90f)
-                    lineTo(w * 0.44f, h * 0.58f)
-                    close()
-                }
-                drawPath(plane, Color.White, style = Stroke(stroke, join = StrokeJoin.Round))
-                drawLine(Color.White, Offset(w * 0.44f, h * 0.58f), Offset(w * 0.92f, h * 0.12f), stroke)
+            when {
+                starting -> CircularProgressIndicator(
+                    modifier = Modifier.size(24.dp),
+                    color = Color.White,
+                    strokeWidth = 2.6.dp,
+                )
+
+                running -> StopGlyph(color = Color.White, size = 17.dp)
+                else -> PlayGlyph(color = Color.White, size = 21.dp)
             }
         }
     }
 }
-fun pathOf(url: String): String {
-    val schemeEnd = url.indexOf("://")
-    val rest = if (schemeEnd >= 0) url.substring(schemeEnd + 3) else url
-    val slash = rest.indexOf('/')
-    return if (slash >= 0) rest.substring(slash) else "/"
-}
+
 fun methodColor(method: String): Color = when (method.uppercase()) {
     "GET" -> Color(0xFF2E9E63)
     "POST" -> Color(0xFF3B7DD8)
@@ -725,34 +647,4 @@ fun statusColor(code: Int): Color = when {
     code < 400 -> Color(0xFF2F8FD8)
     code < 500 -> Color(0xFFD08A22)
     else -> Color(0xFFD64545)
-}
-fun formatBytes(size: Int): String = when {
-    size <= 0 -> "0 B"
-    size < 1024 -> "$size B"
-    size < 1024 * 1024 -> "%.1f KB".format(java.util.Locale.US, size / 1024.0)
-    else -> "%.2f MB".format(java.util.Locale.US, size / 1048576.0)
-}
-@Composable
-fun SearchGlyph(color: Color, size: Dp = 16.dp) {
-    Canvas(Modifier.size(size)) {
-        val stroke = 1.7.dp.toPx()
-        drawCircle(color, this.size.minDimension * 0.32f, Offset(this.size.width * 0.42f, this.size.height * 0.42f), style = Stroke(stroke))
-        drawLine(
-            color,
-            Offset(this.size.width * 0.66f, this.size.height * 0.66f),
-            Offset(this.size.width * 0.92f, this.size.height * 0.92f),
-            stroke,
-        )
-    }
-}
-@Composable
-fun CloseGlyph(color: Color, size: Dp = 16.dp, onClick: (() -> Unit)? = null) {
-    val modifier = Modifier.size(size).let { base ->
-        if (onClick != null) base.clip(CircleShape).clickable(onClick = onClick) else base
-    }
-    Canvas(modifier) {
-        val stroke = 1.7.dp.toPx()
-        drawLine(color, Offset(0.22f * this.size.width, 0.22f * this.size.height), Offset(0.78f * this.size.width, 0.78f * this.size.height), stroke)
-        drawLine(color, Offset(0.78f * this.size.width, 0.22f * this.size.height), Offset(0.22f * this.size.width, 0.78f * this.size.height), stroke)
-    }
 }

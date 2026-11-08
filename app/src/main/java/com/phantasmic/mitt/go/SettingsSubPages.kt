@@ -37,10 +37,10 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -55,27 +55,23 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.phantasmic.mitt.go.ui.effect.BgEffectBackground
-import java.security.MessageDigest
-import java.security.cert.CertificateFactory
-import java.security.cert.X509Certificate
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import java.io.File
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.LinearProgressIndicator
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
+import top.yukonga.miuix.kmp.theme.LocalContentColor
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 
@@ -94,8 +90,6 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 // ==================== 证书与安装 ====================
 
-private const val CA_HASH = "7dd0b8dd.0"
-
 @Composable
 fun CertificatePage(
     settings: MittSettings,
@@ -107,9 +101,8 @@ fun CertificatePage(
 ) {
     val context = LocalContext.current
     val colors = MiuixTheme.colorScheme
-    val scope = rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }
-    val fingerprint = remember { caFingerprint(context) }
+    val fingerprint = remember { CertificateExporter.fingerprint(context) }
     val builtinInstalled = remember { CertStatus.builtinInstalled() }
     val indiaAvailable = remember { CertStatus.indiaAvailable() }
     val india = settings.certMode == CertMode.INDIA
@@ -124,18 +117,17 @@ fun CertificatePage(
     fun runExport(action: (Context) -> String) {
         if (busy) return
         busy = true
-        scope.launch {
-            val result = withContext(Dispatchers.IO) { runCatching { action(context) } }
-            busy = false
-            Toast.makeText(
-                context,
+        exportAsync(
+            context = context,
+            action = { runCatching { action(context) } },
+            message = { result ->
                 result.fold(
                     onSuccess = { "已导出：$it" },
                     onFailure = { "导出失败：${it.message}" },
-                ),
-                Toast.LENGTH_LONG,
-            ).show()
-        }
+                )
+            },
+            onFinished = { busy = false },
+        )
     }
 
     LazyColumn(
@@ -260,6 +252,8 @@ fun CertificatePage(
                         modifier = Modifier.fillMaxWidth(),
                         colors = if (recommendScript) recommendGreen else ButtonDefaults.buttonColorsPrimary(),
                     ) {
+                        ExportGlyph(color = LocalContentColor.current)
+                        Spacer(Modifier.width(6.dp))
                         Text(
                             when {
                                 busy -> "导出中…"
@@ -297,6 +291,8 @@ fun CertificatePage(
                             recommendGreen
                         },
                     ) {
+                        ExportGlyph(color = LocalContentColor.current)
+                        Spacer(Modifier.width(6.dp))
                         Text(
                             when {
                                 busy -> "导出中…"
@@ -330,6 +326,8 @@ fun CertificatePage(
                         modifier = Modifier.fillMaxWidth(),
                         colors = ButtonDefaults.buttonColorsPrimary(),
                     ) {
+                        ExportGlyph(color = LocalContentColor.current)
+                        Spacer(Modifier.width(6.dp))
                         Text(if (busy) "导出中…" else "导出系统根证书 7dd0b8dd.0")
                     }
                 }
@@ -532,45 +530,6 @@ private fun InfoLine(label: String, value: String) {
     }
 }
 
-@Composable
-private fun StepText(index: String, text: String) {
-    val colors = MiuixTheme.colorScheme
-    Row(Modifier.padding(vertical = 3.dp), verticalAlignment = Alignment.Top) {
-        Box(
-            Modifier
-                .size(17.dp)
-                .clip(RoundedCornerShape(5.dp))
-                .background(colors.primary.copy(alpha = 0.14f)),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                text = index,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = colors.primary,
-            )
-        }
-        Spacer(Modifier.width(8.dp))
-        Text(
-            text = text,
-            fontSize = 12.sp,
-            lineHeight = 18.sp,
-            color = colors.onSurface,
-            modifier = Modifier.weight(1f),
-        )
-    }
-}
-
-private fun caFingerprint(context: Context): String = runCatching {
-    val pem = context.assets.open("ca/ca.crt")
-        .bufferedReader(Charsets.UTF_8)
-        .use { it.readText() }
-    val cert = CertificateFactory.getInstance("X.509")
-        .generateCertificate(pem.byteInputStream()) as X509Certificate
-    MessageDigest.getInstance("SHA-256")
-        .digest(cert.encoded)
-        .joinToString(":") { "%02X".format(it) }
-}.getOrDefault("-")
 
 // ==================== 代理过滤 ====================
 
@@ -998,7 +957,6 @@ fun AboutPage(
 ) {
     val context = LocalContext.current
     val colors = MiuixTheme.colorScheme
-    val ts = MiuixTheme.textStyles
     val pageSizeKb = runCatching {
         android.system.Os.sysconf(android.system.OsConstants._SC_PAGESIZE) / 1024
     }.getOrDefault(4)
@@ -1043,11 +1001,18 @@ fun AboutPage(
         }
 
         item(key = "github") {
+            val update by Updater.state.collectAsState()
             OutlineCard {
                 ArrowPreference(
                     title = "在 GitHub 查看源码",
                     summary = "Phantasmic-cloud/Mitt-go",
                     onClick = { openUrl(context, "https://github.com/Phantasmic-cloud/Mitt-go") },
+                )
+                UpdatePreference(
+                    state = update,
+                    onCheck = { Updater.check(context) },
+                    onDownload = { Updater.download(context) },
+                    onInstall = { file -> Updater.install(context, file) },
                 )
             }
         }
@@ -1106,13 +1071,7 @@ fun AboutPage(
         }
 
         item(key = "info") {
-            Text(
-                text = "信息",
-                style = ts.footnote1,
-                color = colors.onSurfaceSecondary,
-                modifier = Modifier.padding(start = 10.dp, bottom = 2.dp),
-            )
-            Spacer(Modifier.height(6.dp))
+            SectionHeader("信息")
             OutlineCard {
                 BasicComponent(
                     title = "版本",
@@ -1155,13 +1114,7 @@ fun AboutPage(
         }
 
         item(key = "refs") {
-            Text(
-                text = "参考项目",
-                style = ts.footnote1,
-                color = colors.onSurfaceSecondary,
-                modifier = Modifier.padding(start = 10.dp, bottom = 2.dp),
-            )
-            Spacer(Modifier.height(6.dp))
+            SectionHeader("参考项目")
             OutlineCard {
                 ArrowPreference(
                     title = "Miuix",
@@ -1181,6 +1134,131 @@ fun AboutPage(
             }
         }
     }
+    }
+}
+
+/**
+ * 关于页的「检查更新」行与展开区。
+ *
+ * 状态全部来自 [Updater]，这里只负责画：检查中 / 已是最新 / 有新版本 /
+ * 下载进度 / 下载完成。有可用更新时像免责声明一样在卡片内摊开。
+ */
+@Composable
+private fun UpdatePreference(
+    state: Updater.State,
+    onCheck: () -> Unit,
+    onDownload: () -> Unit,
+    onInstall: (File) -> Unit,
+) {
+    val colors = MiuixTheme.colorScheme
+    val status = when (state) {
+        Updater.State.Idle -> ""
+        Updater.State.Checking -> "检查中…"
+        Updater.State.UpToDate -> "已是最新"
+        is Updater.State.Available -> "v${state.version}"
+        is Updater.State.Downloading -> "下载中"
+        is Updater.State.Downloaded -> "下载完成"
+        Updater.State.Failed -> "重试"
+    }
+    BasicComponent(
+        title = "检查更新",
+        onClick = { if (state !is Updater.State.Checking) onCheck() },
+        endActions = {
+            if (status.isNotEmpty()) {
+                Text(
+                    text = status,
+                    fontSize = 12.sp,
+                    color = if (state is Updater.State.Available) colors.primary else colors.onSurfaceSecondary,
+                )
+            }
+        },
+    )
+    AnimatedVisibility(
+        visible = state is Updater.State.Available ||
+            state is Updater.State.Downloading ||
+            state is Updater.State.Downloaded,
+        enter = expandVertically(animationSpec = tween(200)) + fadeIn(tween(160)),
+        exit = shrinkVertically(animationSpec = tween(200)) + fadeOut(tween(120)),
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(start = 16.dp, end = 16.dp, bottom = 14.dp),
+        ) {
+            when (state) {
+                is Updater.State.Available -> {
+                    Text(
+                        text = "发现新版本 v${state.version}",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = colors.onSurface,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "当前版本 v${BuildConfig.VERSION_NAME}",
+                        fontSize = 12.sp,
+                        lineHeight = 18.sp,
+                        color = colors.onSurfaceSecondary,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Button(
+                        onClick = onDownload,
+                        colors = ButtonDefaults.buttonColorsPrimary(),
+                    ) {
+                        Text("下载")
+                    }
+                }
+                is Updater.State.Downloading -> {
+                    LinearProgressIndicator(
+                        progress = if (state.total > 0) {
+                            (state.received.toFloat() / state.total).coerceIn(0f, 1f)
+                        } else {
+                            null
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = if (state.total > 0) {
+                                "${formatSize(state.received.toInt())} / ${formatSize(state.total.toInt())}"
+                            } else {
+                                formatSize(state.received.toInt())
+                            },
+                            fontSize = 12.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = colors.onSurfaceSecondary,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            text = "${formatSize(state.speed.toInt())}/s",
+                            fontSize = 12.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = colors.onSurfaceSecondary,
+                        )
+                    }
+                }
+                is Updater.State.Downloaded -> {
+                    Text(
+                        text = "下载完成，点「安装」开始升级",
+                        fontSize = 12.sp,
+                        lineHeight = 18.sp,
+                        color = colors.onSurfaceSecondary,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Button(
+                        onClick = { onInstall(state.file) },
+                        colors = ButtonDefaults.buttonColorsPrimary(),
+                    ) {
+                        Text("安装")
+                    }
+                }
+                else -> Unit
+            }
+        }
     }
 }
 

@@ -35,8 +35,8 @@ android {
         applicationId = "com.phantasmic.mitt.go"
         minSdk = 33
         targetSdk = 36
-        versionCode = 82
-        versionName = "2.0.7"
+        versionCode = 95
+        versionName = "2.2.8"
 
         ndk {
             abiFilters += "arm64-v8a"

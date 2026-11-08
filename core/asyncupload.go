@@ -347,10 +347,7 @@ func flowURL(f *proxy.Flow) string {
 	if strings.HasPrefix(u.Path, "http://") || strings.HasPrefix(u.Path, "https://") {
 		return u.Path
 	}
-	host := ""
-	if raw := f.Request.Raw(); raw != nil {
-		host = strings.TrimSpace(raw.Host)
-	}
+	host := strings.TrimSpace(rawHost(f))
 	if host == "" {
 		host = u.Host
 	}

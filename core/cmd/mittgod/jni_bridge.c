@@ -41,27 +41,6 @@ Java_com_phantasmic_mitt_go_GoCoreJni_stop(JNIEnv *env, jobject thiz) {
 }
 
 JNIEXPORT jstring JNICALL
-Java_com_phantasmic_mitt_go_GoCoreJni_snapshot(JNIEnv *env, jobject thiz) {
-    (void)thiz;
-    return take_string(env, MittGoSnapshot());
-}
-
-JNIEXPORT jstring JNICALL
-Java_com_phantasmic_mitt_go_GoCoreJni_record(JNIEnv *env, jobject thiz, jstring id) {
-    (void)thiz;
-    if (id == NULL) {
-        return (*env)->NewStringUTF(env, "");
-    }
-    const char *chars = (*env)->GetStringUTFChars(env, id, NULL);
-    if (chars == NULL) {
-        return (*env)->NewStringUTF(env, "");
-    }
-    char *body = MittGoRecord((char *)chars);
-    (*env)->ReleaseStringUTFChars(env, id, chars);
-    return take_string(env, body);
-}
-
-JNIEXPORT jstring JNICALL
 Java_com_phantasmic_mitt_go_GoCoreJni_events(JNIEnv *env, jobject thiz, jlong since, jint limit) {
     (void)thiz;
     return take_string(env, MittGoEvents((long long)since, (int)limit));
@@ -72,12 +51,6 @@ Java_com_phantasmic_mitt_go_GoCoreJni_clear(JNIEnv *env, jobject thiz) {
     (void)env;
     (void)thiz;
     MittGoClear();
-}
-
-JNIEXPORT jstring JNICALL
-Java_com_phantasmic_mitt_go_GoCoreJni_dump(JNIEnv *env, jobject thiz, jint limit, jint maxBody) {
-    (void)thiz;
-    return take_string(env, MittGoDump((int)limit, (int)maxBody));
 }
 
 JNIEXPORT jstring JNICALL
@@ -97,6 +70,21 @@ Java_com_phantasmic_mitt_go_GoCoreJni_setDomainFilter(JNIEnv *env, jobject thiz,
         return (*env)->NewStringUTF(env, "out of memory");
     }
     char *err = MittGoSetDomainFilter((char *)chars);
+    (*env)->ReleaseStringUTFChars(env, config, chars);
+    return take_string(env, err);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_phantasmic_mitt_go_GoCoreJni_setUpstream(JNIEnv *env, jobject thiz, jstring config) {
+    (void)thiz;
+    if (config == NULL) {
+        return (*env)->NewStringUTF(env, "config is required");
+    }
+    const char *chars = (*env)->GetStringUTFChars(env, config, NULL);
+    if (chars == NULL) {
+        return (*env)->NewStringUTF(env, "out of memory");
+    }
+    char *err = MittGoSetUpstream((char *)chars);
     (*env)->ReleaseStringUTFChars(env, config, chars);
     return take_string(env, err);
 }

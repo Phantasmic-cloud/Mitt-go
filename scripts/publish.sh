@@ -6,7 +6,7 @@
 #
 set -eu
 
-SRC=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+SRC=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 DST=${1:-}
 
 if [ -z "$DST" ]; then

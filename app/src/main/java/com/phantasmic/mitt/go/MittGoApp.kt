@@ -7,9 +7,6 @@ import android.util.Log
 import java.io.File
 import java.io.PrintWriter
 import java.io.StringWriter
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -20,10 +17,8 @@ class MittGoApp : Application() {
     override fun onCreate() {
         super.onCreate()
         AppIdentityResolver.init(this)
-        ProxyCore.attach(this)
         val settings = AppSettings.load(this)
-        CaptureStore.setMemoryLimitMb(settings.memoryLimitMb)
-        CaptureStore.setAutoSaveDays(settings.autoSaveDays)
+        SettingsRuntime.applyInitial(settings)
         CaptureStore.attach(this)
         AsyncUploadRuntime.attach(this)
         CaptureStore.startPolling(appScope)
@@ -71,7 +66,7 @@ class MittGoApp : Application() {
     private fun buildCrashReport(thread: Thread, error: Throwable): String {
         val sw = StringWriter()
         PrintWriter(sw).use { error.printStackTrace(it) }
-        val time = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
+        val time = TimeFmt.stampDefault(System.currentTimeMillis())
         return buildString {
             appendLine("Mitt-go ${BuildConfig.VERSION_NAME} 异常")
             appendLine("时间: $time")

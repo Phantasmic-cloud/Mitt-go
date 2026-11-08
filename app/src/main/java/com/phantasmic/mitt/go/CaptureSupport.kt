@@ -2,11 +2,14 @@ package com.phantasmic.mitt.go
 
 import android.util.LruCache
 import androidx.compose.ui.graphics.Color
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
 
-
+/**
+ * 抓包页/详情页共用的展示工具。
+ *
+ * 时间统一走 [TimeFmt]，内容类型统一走 [ContentKind]，体积统一走 [formatSize]。
+ * 新加页面时优先用这里和 [CaptureModel] 的现成函数，不要各写一份。
+ */
 
 /** 按域名聚合出来的一组请求。 */
 data class DomainGroup(
@@ -15,52 +18,59 @@ data class DomainGroup(
     val latest: CaptureSummary,
 )
 
-private val timeFormat = object : ThreadLocal<SimpleDateFormat>() {
-    override fun initialValue() = SimpleDateFormat("HH:mm:ss", Locale.US)
-}
-
-private val sessionFormat = object : ThreadLocal<SimpleDateFormat>() {
-    override fun initialValue() = SimpleDateFormat("MM-dd HH:mm", Locale.US)
-}
-
 private val regexCache = object : LruCache<String, Regex>(32) {}
 
-fun formatClock(millis: Long): String = timeFormat.get()!!.format(Date(millis))
+fun formatClock(millis: Long): String = TimeFmt.clock(millis)
 
-fun formatSessionRange(start: Long, end: Long): String {
-    val formatter = sessionFormat.get()!!
-    return "${formatter.format(Date(start))}-${SimpleDateFormat("HH:mm", Locale.US).format(Date(end))}"
-}
+/** 会话标题里的时间段：`11-01 12:00-12:30`。 */
+fun formatSessionRange(start: Long, end: Long): String =
+    "${TimeFmt.dayClock(start)}-${TimeFmt.clockShort(end)}"
 
-/** Content-Type → 列表右侧的短类型标签。 */
-fun typeLabel(contentType: String): String {
-    val value = contentType.lowercase()
-    return when {
-        value.contains("json") -> "JSON"
-        value.contains("html") -> "HTML"
-        value.contains("image") -> "IMAGE"
-        value.contains("video") -> "VIDEO"
-        value.contains("audio") -> "AUDIO"
-        value.contains("javascript") -> "JS"
-        value.contains("css") -> "CSS"
-        value.contains("text") -> "TEXT"
-        value.contains("xml") -> "XML"
-        value.isEmpty() -> "—"
-        else -> "BIN"
+/** Content-Type → 列表右侧的短类型标签（空值显示为破折号）。 */
+fun typeLabel(contentType: String): String =
+    if (contentType.isEmpty()) "—" else ContentKind.of(contentType).label
+
+fun typeColor(contentType: String): Color =
+    if (contentType.isEmpty()) Color(0xFF7A7A7A) else ContentKind.of(contentType).color
+
+/**
+ * 体积显示，两种写法并存是有意的：
+ * - `compact = true` 给列表行用：`534kb` / `1.2mb`；
+ * - `compact = false` 给详情页用：`534.0 KB` / `1.20 MB`。
+ */
+fun formatSize(size: Int, compact: Boolean = false): String = if (compact) {
+    when {
+        size <= 0 -> "0kb"
+        size < 1024 -> "${size}b"
+        size < 1024 * 1024 -> "${size / 1024}kb"
+        else -> "%.1fmb".format(Locale.US, size / 1048576.0)
+    }
+} else {
+    when {
+        size <= 0 -> "0 B"
+        size < 1024 -> "$size B"
+        size < 1024 * 1024 -> "%.1f KB".format(Locale.US, size / 1024.0)
+        else -> "%.2f MB".format(Locale.US, size / 1048576.0)
     }
 }
 
-fun typeColor(contentType: String): Color = when (typeLabel(contentType)) {
-    "JSON" -> Color(0xFFD9922B)
-    "TEXT" -> Color(0xFF4E9A5B)
-    "HTML" -> Color(0xFF3E7BC4)
-    "XML" -> Color(0xFF3E9AA8)
-    "JS", "CSS" -> Color(0xFFB07A22)
-    "IMAGE" -> Color(0xFFD267A5)
-    "VIDEO" -> Color(0xFF8E6BD0)
-    "AUDIO" -> Color(0xFF5E8FB8)
-    "BIN" -> Color(0xFF8E6BD0)
-    else -> Color(0xFF7A7A7A)
+/** `scheme://host/path?query` 里的 `/path?query`；没有路径就返回 `/`。 */
+fun pathOf(url: String): String {
+    val schemeEnd = url.indexOf("://")
+    val rest = if (schemeEnd >= 0) url.substring(schemeEnd + 3) else url
+    val slash = rest.indexOf('/')
+    return if (slash >= 0) rest.substring(slash) else "/"
+}
+
+/** `scheme://host[:port]` 与 `/path?query` 拆开显示。 */
+fun splitUrl(url: String): Pair<String, String> {
+    val schemeEnd = url.indexOf("://")
+    if (schemeEnd < 0) return url to ""
+    val rest = url.substring(schemeEnd + 3)
+    val slash = rest.indexOf('/')
+    if (slash < 0) return url to "/"
+    val base = url.substring(0, schemeEnd + 3 + slash)
+    return base to rest.substring(slash)
 }
 
 fun groupByHost(records: List<CaptureSummary>): List<DomainGroup> =
@@ -96,22 +106,14 @@ val highlightPalette = intArrayOf(
     0xFFD267A5.toInt(),
 )
 
-/** 列表里用的紧凑体积：534kb / 1.2mb。 */
-fun compactSize(size: Int): String = when {
-    size <= 0 -> "0kb"
-    size < 1024 -> "${size}b"
-    size < 1024 * 1024 -> "${size / 1024}kb"
-    else -> "%.1fmb".format(java.util.Locale.US, size / 1048576.0)
-}
-
 /** 会话标题：11-01 12:00-12:30，跨天时把结束日期也带上。 */
 fun sessionLabel(session: CaptureSession): String {
-    val day = java.text.SimpleDateFormat("MM-dd", java.util.Locale.US)
-    val clock = java.text.SimpleDateFormat("HH:mm", java.util.Locale.US)
-    val start = java.util.Date(session.startedAt)
-    val end = java.util.Date(session.endedAt)
-    val startText = "${day.format(start)} ${clock.format(start)}"
-    val sameDay = day.format(start) == day.format(end)
-    val endText = if (sameDay) clock.format(end) else "${day.format(end)} ${clock.format(end)}"
+    val startText = "${TimeFmt.day(session.startedAt)} ${TimeFmt.clockShort(session.startedAt)}"
+    val sameDay = TimeFmt.day(session.startedAt) == TimeFmt.day(session.endedAt)
+    val endText = if (sameDay) {
+        TimeFmt.clockShort(session.endedAt)
+    } else {
+        "${TimeFmt.day(session.endedAt)} ${TimeFmt.clockShort(session.endedAt)}"
+    }
     return "$startText-$endText"
 }

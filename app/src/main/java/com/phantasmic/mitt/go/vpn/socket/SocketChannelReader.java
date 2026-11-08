@@ -32,6 +32,9 @@ class SocketChannelReader {
 
     private final ClientPacketWriter writer;
 
+    /** 复用读缓冲：之前每个 selector 事件都 new 一个 64 KiB 的 ByteBuffer。 */
+    private final ByteBuffer readBuffer = ByteBuffer.allocate(Constant.MAX_RECEIVE_BUFFER_SIZE);
+
     public SocketChannelReader(ClientPacketWriter writer) {
         this.writer = writer;
     }
@@ -82,7 +85,8 @@ class SocketChannelReader {
         }
 
         SocketChannel channel = (SocketChannel) connection.getChannel();
-        ByteBuffer buffer = ByteBuffer.allocate(Constant.MAX_RECEIVE_BUFFER_SIZE);
+        ByteBuffer buffer = readBuffer;
+        buffer.clear();
         int len;
 
         try {
@@ -117,10 +121,8 @@ class SocketChannelReader {
 
         buffer.limit(dataSize);
         buffer.flip();
-        // TODO should allocate new byte array?
-        byte[] data = new byte[dataSize];
-        System.arraycopy(buffer.array(), 0, data, 0, dataSize);
-        connection.addReceivedData(data);
+        // 直接写进连接的接收缓冲，省掉一次 64 KiB 的分配和拷贝。
+        connection.addReceivedData(buffer.array(), 0, dataSize);
         //pushing all data to vpn client
         while (connection.hasReceivedData()) {
             pushDataToClient(connection);
@@ -175,7 +177,8 @@ class SocketChannelReader {
 
     private void readUDP(Connection connection) {
         DatagramChannel channel = (DatagramChannel) connection.getChannel();
-        ByteBuffer buffer = ByteBuffer.allocate(Constant.MAX_RECEIVE_BUFFER_SIZE);
+        ByteBuffer buffer = readBuffer;
+        buffer.clear();
         int len;
 
         try {

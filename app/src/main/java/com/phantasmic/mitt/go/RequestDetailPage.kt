@@ -48,9 +48,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Text
@@ -131,14 +128,14 @@ fun RequestDetailPage(
                         title = "请求体内容",
                         headers = shown.requestHeaders,
                         body = shown.requestBody,
-                        contentType = headerValue(shown.requestHeaders, "content-type"),
+                        contentType = headerOf(shown.requestHeaders, "Content-Type"),
                     )
 
                     DetailTab.RESPONSE -> BodyTab(
                         title = "响应体内容",
                         headers = shown.responseHeaders,
                         body = shown.responseBody,
-                        contentType = headerValue(shown.responseHeaders, "content-type"),
+                        contentType = headerOf(shown.responseHeaders, "Content-Type"),
                     )
                 }
             }
@@ -157,9 +154,7 @@ private fun PendingDetail(summary: CaptureSummary, topInset: Dp, failed: Boolean
     val appLabel = remember(summary.packageName) {
         AppIdentityResolver.labelFor(context, summary.packageName)
     }
-    val time = remember(summary.startedAt) {
-        SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date(summary.startedAt))
-    }
+    val time = remember(summary.startedAt) { TimeFmt.clockMillis(summary.startedAt) }
     Column(Modifier.fillMaxSize().padding(top = topInset)) {
         Row(
             Modifier
@@ -242,9 +237,7 @@ private fun DetailSummary(detail: CaptureDetail) {
     val appLabel = remember(detail.packageName) {
         AppIdentityResolver.labelFor(context, detail.packageName)
     }
-    val time = remember(detail.startedAt) {
-        SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date(detail.startedAt))
-    }
+    val time = remember(detail.startedAt) { TimeFmt.stamp(detail.startedAt) }
     Row(
         Modifier
             .fillMaxWidth()
@@ -326,15 +319,14 @@ private fun BasicTab(detail: CaptureDetail) {
                 "协议" to detail.proto.ifBlank { "-" },
                 "状态码" to if (detail.error.isNotBlank()) "失败" else statusText(detail.statusCode),
                 "耗时" to if (detail.durationMs > 0) "${detail.durationMs} ms" else "-",
-                "开始时间" to SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
-                    .format(Date(detail.startedAt)),
+                "开始时间" to TimeFmt.stamp(detail.startedAt),
                 "IP" to detail.remoteAddr.ifBlank { "-" },
                 "基础 URL" to baseUrl.ifBlank { "-" },
                 "路径" to urlPath.ifBlank { "-" },
                 "请求头数量" to detail.requestHeaders.size.toString(),
                 "响应头数量" to detail.responseHeaders.size.toString(),
-                "请求大小" to formatBytes(detail.requestBody.size),
-                "响应大小" to formatBytes(detail.responseBody.size),
+                "请求大小" to formatSize(detail.requestBody.size),
+                "响应大小" to formatSize(detail.responseBody.size),
                 "App 包名" to detail.packageName.ifBlank { "-" },
                 "UID" to detail.uid.toString(),
             ),
@@ -361,17 +353,6 @@ private fun BasicTab(detail: CaptureDetail) {
             }
         }
     }
-}
-
-/** scheme://host[:port] 与 /path?query 拆开显示。 */
-fun splitUrl(url: String): Pair<String, String> {
-    val schemeEnd = url.indexOf("://")
-    if (schemeEnd < 0) return url to ""
-    val rest = url.substring(schemeEnd + 3)
-    val slash = rest.indexOf('/')
-    if (slash < 0) return url to "/"
-    val base = url.substring(0, schemeEnd + 3 + slash)
-    return base to rest.substring(slash)
 }
 
 @Composable
@@ -466,12 +447,13 @@ private fun BodyTab(
 private fun BodyCard(title: String, body: BodyView, contentType: String) {
     val colors = MiuixTheme.colorScheme
     val context = LocalContext.current
-    val kind = remember(body.data, body.encoding, contentType) {
-        BodyCodec.kind(contentType, body)
+    // 类型和正文一次算好：之前 kind() 和 displayText() 会各 parse + 美化一遍正文，
+    // 大 JSON 在切 tab 时是实打实的主线程开销。
+    val render = remember(body.data, body.encoding, contentType) {
+        BodyCodec.render(contentType, body)
     }
-    val text = remember(body.data, body.encoding, contentType) {
-        BodyCodec.displayText(contentType, body)
-    }
+    val kind = render.kind
+    val text = render.text
     val image = remember(body.data, contentType) {
         if (body.encoding == "base64" && contentType.contains("image", ignoreCase = true)) {
             decodeBase64Image(body.data)
@@ -497,7 +479,7 @@ private fun BodyCard(title: String, body: BodyView, contentType: String) {
                 color = typeColor(contentType),
             )
             Text(
-                text = " · ${compactSize(body.size)}",
+                text = " · ${formatSize(body.size, compact = true)}",
                 fontSize = 11.sp,
                 fontFamily = FontFamily.Monospace,
                 color = colors.onSurfaceSecondary,
@@ -521,7 +503,7 @@ private fun BodyCard(title: String, body: BodyView, contentType: String) {
         if (body.truncated) {
             Spacer(Modifier.height(4.dp))
             Text(
-                text = "正文超过 1 MiB，仅保留前面部分",
+                text = "正文超过 128 KiB，仅保留前面部分",
                 fontSize = 11.sp,
                 color = Color(0xFFD08A22),
             )
@@ -573,9 +555,6 @@ private fun copyToClipboard(context: Context, text: String) {
     val manager = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
     runCatching { manager?.setPrimaryClip(ClipData.newPlainText("Mitt-go", text)) }
 }
-
-private fun headerValue(headers: List<HeaderItem>, name: String): String =
-    headers.firstOrNull { it.name.equals(name, ignoreCase = true) }?.value.orEmpty()
 
 @Composable
 private fun MethodBadgePublic(method: String) {

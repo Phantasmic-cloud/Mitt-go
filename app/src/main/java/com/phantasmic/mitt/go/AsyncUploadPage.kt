@@ -8,29 +8,28 @@ import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.Canvas
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
@@ -42,63 +41,80 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.text.rememberTextMeasurer
-import androidx.compose.ui.text.TextLayoutResult
-import androidx.compose.ui.text.drawText
-import androidx.compose.runtime.SideEffect
-import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.window.DialogWindowProvider
-import android.view.WindowManager
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.ui.graphics.Shape
-import top.yukonga.miuix.kmp.blur.Backdrop
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.FastOutLinearInEasing
-import androidx.compose.animation.core.LinearOutSlowInEasing
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
-import top.yukonga.miuix.kmp.blur.blur
-import top.yukonga.miuix.kmp.blur.drawBackdrop
-import androidx.compose.foundation.layout.Arrangement
-import top.yukonga.miuix.kmp.basic.Button
-import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.OffsetMapping
 import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
+import com.phantasmic.mitt.go.ui.GlassCard
+import com.phantasmic.mitt.go.ui.GlassLevel
+import com.phantasmic.mitt.go.ui.GlassMenuItem
+import com.phantasmic.mitt.go.ui.GlassMenuItem
+import com.phantasmic.mitt.go.ui.GlassPopover
+import com.phantasmic.mitt.go.ui.MittModal
+import kotlin.math.roundToInt
+import top.yukonga.miuix.kmp.basic.Button
+import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.Switch
+import top.yukonga.miuix.kmp.basic.SwitchDefaults
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
-/** 右上角两个小按钮 → 页面内的动作（导入 / 新建）。 */
+/**
+ * 旁路上传页的 UI 状态。
+ *
+ * 编辑器状态放在这里而不是页面里：编辑器的浮层画在二级页图层那一层
+ * （这样才能盖住顶栏、玻璃取景也取的是当前页），页面只负责触发打开。
+ */
 class AsyncUploadUi {
     var importTick by mutableIntStateOf(0)
     var createTick by mutableIntStateOf(0)
+    var editorOpen by mutableStateOf(false)
+    var editorId by mutableStateOf<String?>(null)
+    var editorSeed by mutableStateOf(YAML_TEMPLATE)
+    /** 单份配置的操作单（编辑 / 导出 / 删除），null = 关着。 */
+    var actionTarget by mutableStateOf<AsyncConfig?>(null)
+    /** 点「⋯」时那个按钮在窗口里的位置，菜单贴着它弹。 */
+    var actionAnchor by mutableStateOf<Rect?>(null)
+
+    fun openEditor(id: String?, seed: String) {
+        editorId = id
+        editorSeed = seed
+        editorOpen = true
+    }
+
+    fun closeEditor() {
+        editorOpen = false
+    }
 }
 
 private const val YAML_TEMPLATE = """enable: true
@@ -133,16 +149,12 @@ fun AsyncUploadPage(
     topInset: Dp,
     bottomInset: Dp,
     ui: AsyncUploadUi,
-    backdrop: Backdrop?,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
     val colors = MiuixTheme.colorScheme
     val revision = AsyncUploadStore.revision.intValue
     val configs = remember(revision) { AsyncUploadStore.list(context) }
-    var editorOpen by remember { mutableStateOf(false) }
-    var editorId by remember { mutableStateOf<String?>(null) }
-    var editorSeed by remember { mutableStateOf(YAML_TEMPLATE) }
 
     fun refresh() {
         if (running) AsyncUploadRuntime.sync()
@@ -166,9 +178,7 @@ fun AsyncUploadPage(
         AsyncUploadStore.readText(context, uri, queryDisplayName(context, uri))
             .onSuccess { raw ->
                 MittLog.info("async", "已读入配置文件，等待确认保存")
-                editorId = null
-                editorSeed = raw
-                editorOpen = true
+                ui.openEditor(null, raw)
             }
             .onFailure { error ->
                 MittLog.warn("async", "导入失败：${error.message}")
@@ -189,9 +199,7 @@ fun AsyncUploadPage(
     }
 
     fun openCreate() {
-        editorId = null
-        editorSeed = YAML_TEMPLATE
-        editorOpen = true
+        ui.openEditor(null, YAML_TEMPLATE)
         MittLog.debug("async") { "打开新建配置编辑器" }
     }
 
@@ -221,7 +229,6 @@ fun AsyncUploadPage(
                     onCheckedChange = { enabled ->
                         MittLog.info("async", "总开关 → $enabled")
                         onSettingsChange(settings.copy(asyncUploadEnabled = enabled))
-                        if (running) AsyncUploadRuntime.sync()
                         if (enabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                             !AsyncNotify.canPost(context)
                         ) {
@@ -251,162 +258,255 @@ fun AsyncUploadPage(
                 Column(Modifier.animateItem()) {
                     Spacer(Modifier.height(12.dp))
                     Card(Modifier.fillMaxWidth()) {
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    editorId = config.id
-                                    editorSeed = config.raw
-                                    editorOpen = true
-                                    MittLog.debug("async") { "编辑配置「${config.name}」" }
-                                }
-                                .padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Column(Modifier.weight(1f)) {
-                                Text(
-                                    text = config.name,
-                                    fontSize = 15.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    color = colors.onSurface,
+                        AsyncConfigRow(
+                            config = config,
+                            onClick = {
+                                ui.openEditor(config.id, config.raw)
+                                MittLog.debug("async") { "编辑配置「${config.name}」" }
+                            },
+                            onToggle = { checked ->
+                                AsyncUploadStore.setEnabled(context, config.id, checked)
+                                AsyncUploadRuntime.sync()
+                                refresh()
+                                MittLog.info(
+                                    "async",
+                                    (if (checked) "已启用「" else "已停用「") + config.name + "」",
                                 )
-                                Spacer(Modifier.height(3.dp))
-                                Text(
-                                    text = config.firstPattern.ifBlank { "（没有 match_url）" },
-                                    fontSize = 11.sp,
-                                    lineHeight = 16.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    color = colors.onSurfaceSecondary,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            }
-                            Switch(
-                                checked = config.enabled,
-                                onCheckedChange = { checked ->
-                                    AsyncUploadStore.setEnabled(context, config.id, checked)
-                                    AsyncUploadRuntime.sync()
-                                    refresh()
-                                    MittLog.info(
-                                        "async",
-                                        (if (checked) "已启用「" else "已停用「") + config.name + "」",
-                                    )
-                                },
-                                colors = SwitchDefaults.colors(checkedTrackColor = colors.primary),
-                            )
-                            Spacer(Modifier.width(4.dp))
-                            Text(
-                                text = "导出",
-                                fontSize = 13.sp,
-                                color = colors.primary,
-                                modifier = Modifier
-                                    .clickable {
-                                        val name = AsyncUploadStore.export(context, config)
-                                        if (name == null) {
-                                            MittLog.warn("async", "导出「${config.name}」失败")
-                                            Toast.makeText(context, "导出失败", Toast.LENGTH_SHORT).show()
-                                        } else {
-                                            MittLog.info("async", "已导出 $name")
-                                            Toast.makeText(context, "已导出：$name", Toast.LENGTH_SHORT).show()
-                                        }
-                                    }
-                                    .padding(horizontal = 8.dp, vertical = 6.dp),
-                            )
-                            Spacer(Modifier.width(2.dp))
-                            Box(
-                                Modifier
-                                    .clickable {
-                                        AsyncUploadStore.delete(context, config.id)
-                                        MittLog.info("async", "已删除配置「${config.name}」")
-                                        refresh()
-                                    }
-                                    .padding(8.dp),
-                            ) {
-                                TrashGlyph(color = Color(0xFF9A9A9A))
-                            }
-                        }
+                            },
+                            onMore = { anchor ->
+                                ui.actionTarget = config
+                                ui.actionAnchor = anchor
+                            },
+                        )
                     }
                 }
             }
-        }
-    }
-
-    AnimatedVisibility(
-        visible = editorOpen,
-        enter = fadeIn(tween(160)) + scaleIn(
-            initialScale = 0.94f,
-            animationSpec = tween(180, easing = LinearOutSlowInEasing),
-        ),
-        exit = fadeOut(tween(120)) + scaleOut(
-            targetScale = 0.96f,
-            animationSpec = tween(140, easing = FastOutLinearInEasing),
-        ),
-    ) {
-        // imePadding：键盘弹出时把整层顶到键盘上方，面板和光标不会被遮住。
-        Box(Modifier.fillMaxSize().imePadding()) {
-        // 透明的点击遮罩：只负责“点空白关闭”，不压暗背景。
-        Box(
-            Modifier
-                .fillMaxSize()
-                .clickable(
-                    indication = null,
-                    interactionSource = remember { MutableInteractionSource() },
-                ) { editorOpen = false },
-        )
-        YamlEditorPanel(
-            title = if (editorId == null) "新建配置" else "编辑配置",
-            initial = editorSeed,
-            backdrop = backdrop,
-            shape = RoundedCornerShape(24.dp),
-            container = if (backdrop == null) {
-                colors.surface.copy(alpha = 0.94f)
-            } else {
-                colors.surface.copy(alpha = 0.70f)
-            },
-            modifier = Modifier
-                .align(Alignment.Center)
-                .fillMaxWidth(0.94f)
-                .fillMaxHeight(0.86f),
-            onDismiss = { editorOpen = false },
-            onSave = { text ->
-                val id = editorId ?: java.util.UUID.randomUUID().toString()
-                runCatching { AsyncUploadStore.save(context, text, id) }
-                    .onSuccess { config ->
-                        editorOpen = false
-                        MittLog.info("async", "已保存配置「${config.name}」")
-                        Toast.makeText(context, "已保存：${config.name}", Toast.LENGTH_SHORT).show()
-                        refresh()
-                    }
-                    .onFailure { error ->
-                        MittLog.warn("async", "保存失败：${error.message}")
-                        Toast.makeText(context, "保存失败：${error.message}", Toast.LENGTH_LONG).show()
-                    }
-            },
-        )
         }
     }
     }
 }
 
 /**
- * YAML 编辑器：行号 + 缩进辅助线 + 语法配色。
+ * 配置列表的一行：名字 + 规则条数 / server_url，右边一个开关和一个「⋯」。
+ *
+ * 导出、删除这些低频动作用「⋯」收起，避免一行里塞三种控件。
+ */
+@Composable
+private fun AsyncConfigRow(
+    config: AsyncConfig,
+    onClick: () -> Unit,
+    onToggle: (Boolean) -> Unit,
+    onMore: (Rect) -> Unit,
+) {
+    val colors = MiuixTheme.colorScheme
+    // 记「⋯」的坐标：普通字段而不是 state，滚动时不会触发重组。
+    val moreCoords = remember { object { var value: LayoutCoordinates? = null } }
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(start = 16.dp, end = 6.dp, top = 12.dp, bottom = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = config.name.ifBlank { "未命名配置" },
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = if (config.enabled) colors.onSurface else colors.onSurfaceSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = ruleSummary(config.matchCount),
+                    fontSize = 11.sp,
+                    color = if (config.matchCount == 0) Color(0xFFD08A22) else colors.onSurfaceSecondary,
+                    maxLines = 1,
+                )
+            }
+            Spacer(Modifier.height(3.dp))
+            Text(
+                text = config.serverUrl.ifBlank { "（没有 server_url）" },
+                fontSize = 11.sp,
+                lineHeight = 16.sp,
+                fontFamily = FontFamily.Monospace,
+                color = colors.onSurfaceSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        Switch(
+            checked = config.enabled,
+            onCheckedChange = onToggle,
+            colors = SwitchDefaults.switchColors(checkedTrackColor = colors.primary),
+        )
+        Box(
+            Modifier
+                .size(34.dp)
+                .clip(CircleShape)
+                .onGloballyPositioned { moreCoords.value = it }
+                .clickable { onMore(moreCoords.value?.boundsInRoot() ?: Rect.Zero) },
+            contentAlignment = Alignment.Center,
+        ) {
+            MenuDots(color = colors.onSurfaceSecondary)
+        }
+    }
+}
+
+/** `· 3条规则`；一条都没有时提示没配规则。 */
+private fun ruleSummary(count: Int): String =
+    if (count <= 0) "· 未配规则" else "· ${count}条规则"
+
+/**
+ * 单份配置的「⋯」菜单：编辑 / 导出 / 删除，贴着那个按钮弹出。
+ *
+ * 和抓包页的三点菜单走同一个 [GlassPopover]，画在二级页图层这一层，
+ * 玻璃取景取的才是当前页。
+ */
+@Composable
+fun AsyncConfigMenu(ui: AsyncUploadUi, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val colors = MiuixTheme.colorScheme
+    val target = ui.actionTarget
+    // 关掉时留最后一份，退场动画里内容不会先消失。
+    var shown by remember { mutableStateOf<AsyncConfig?>(null) }
+    LaunchedEffect(target) { if (target != null) shown = target }
+    val config = target ?: shown
+    var menuSize by remember { mutableStateOf(IntSize.Zero) }
+    val menuWidth = 152.dp
+
+    BoxWithConstraints(modifier.fillMaxSize()) {
+        val screenW = constraints.maxWidth
+        val screenH = constraints.maxHeight
+        val density = LocalDensity.current
+        GlassPopover(
+            visible = target != null,
+            onDismiss = { ui.actionTarget = null },
+            origin = TransformOrigin(1f, 0f),
+            modifier = Modifier.offset {
+                val anchor = ui.actionAnchor ?: return@offset IntOffset.Zero
+                val gap = with(density) { 6.dp.roundToPx() }
+                val w = if (menuSize.width > 0) menuSize.width else with(density) { menuWidth.roundToPx() }
+                // 还没量到时先按三条菜单估个高度，免得第一帧跑到屏幕外再跳回来。
+                val h = if (menuSize.height > 0) {
+                    menuSize.height
+                } else {
+                    with(density) { 140.dp.roundToPx() }
+                }
+                // 默认在按钮右下方；下面放不下就翻到上方。
+                var x = anchor.right.roundToInt() - w
+                var y = anchor.bottom.roundToInt() + gap
+                if (h > 0 && y + h > screenH) y = anchor.top.roundToInt() - h - gap
+                x = x.coerceIn(0, (screenW - w).coerceAtLeast(0))
+                y = y.coerceIn(0, (screenH - h).coerceAtLeast(0))
+                IntOffset(x, y)
+            },
+        ) {
+            if (config == null) return@GlassPopover
+            GlassCard(
+                modifier = Modifier
+                    .width(menuWidth)
+                    .onSizeChanged { menuSize = it },
+                shape = RoundedCornerShape(18.dp),
+                level = GlassLevel.Menu,
+                padding = PaddingValues(vertical = 6.dp),
+            ) {
+                GlassMenuItem("编辑", leading = { EditGlyph(color = colors.onSurface) }) {
+                    ui.actionTarget = null
+                    ui.openEditor(config.id, config.raw)
+                }
+                GlassMenuItem("导出", leading = { ExportGlyph(color = colors.onSurface) }) {
+                    ui.actionTarget = null
+                    val name = AsyncUploadStore.export(context, config)
+                    if (name == null) {
+                        MittLog.warn("async", "导出「${config.name}」失败")
+                        Toast.makeText(context, "导出失败", Toast.LENGTH_SHORT).show()
+                    } else {
+                        MittLog.info("async", "已导出 $name")
+                        Toast.makeText(context, "已导出：$name", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                GlassMenuItem(
+                    label = "删除",
+                    leading = { TrashGlyphSmall(color = Color(0xFFD64545)) },
+                    contentColor = Color(0xFFD64545),
+                ) {
+                    ui.actionTarget = null
+                    AsyncUploadStore.delete(context, config.id)
+                    AsyncUploadRuntime.sync()
+                    MittLog.info("async", "已删除配置「${config.name}」")
+                }
+            }
+        }
+    }
+}
+
+/**
+ * YAML 编辑器的浮层。
+ *
+ * 画在二级页图层那一层（不是页面里）：这样它能盖住顶栏（编辑器开着时点不到
+ * 导入/新建/返回），玻璃取景也取的是当前页。
+ */
+@Composable
+fun YamlEditorOverlay(ui: AsyncUploadUi, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    MittModal(
+        visible = ui.editorOpen,
+        onDismiss = { ui.closeEditor() },
+        modifier = modifier,
+        imePadding = true,
+    ) {
+        GlassCard(
+            modifier = Modifier
+                .fillMaxWidth(0.94f)
+                .fillMaxHeight(0.86f),
+            shape = RoundedCornerShape(24.dp),
+            level = GlassLevel.Dialog,
+            padding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
+        ) {
+            YamlEditorBody(
+                title = if (ui.editorId == null) "新建配置" else "编辑配置",
+                initial = ui.editorSeed,
+                onDismiss = { ui.closeEditor() },
+                onSave = { text ->
+                    val id = ui.editorId ?: java.util.UUID.randomUUID().toString()
+                    runCatching { AsyncUploadStore.save(context, text, id) }
+                        .onSuccess { config ->
+                            ui.closeEditor()
+                            MittLog.info("async", "已保存配置「${config.name}」")
+                            Toast.makeText(context, "已保存：${config.name}", Toast.LENGTH_SHORT).show()
+                            AsyncUploadRuntime.sync()
+                        }
+                        .onFailure { error ->
+                            MittLog.warn("async", "保存失败：${error.message}")
+                            Toast.makeText(context, "保存失败：${error.message}", Toast.LENGTH_LONG).show()
+                        }
+                },
+            )
+        }
+    }
+}
+
+/**
+ * YAML 编辑器正文：行号 + 缩进辅助线 + 语法配色。
  *
  * 关掉软换行（正文放在横向滚动里），一个逻辑行永远只占一行，行号才能和
  * 正文严格对齐；长行（比如一长串 token）靠横向滚动看。
  */
 @Composable
-private fun YamlEditorPanel(
+private fun ColumnScope.YamlEditorBody(
     title: String,
     initial: String,
-    backdrop: Backdrop?,
-    shape: Shape,
-    container: Color,
-    modifier: Modifier = Modifier,
     onDismiss: () -> Unit,
     onSave: (String) -> Unit,
 ) {
     val colors = MiuixTheme.colorScheme
-    var text by remember { mutableStateOf(initial) }
+    // 换一份 seed 就重置正文（导入/新建都会换 seed）。
+    var text by remember(initial) { mutableStateOf(initial) }
     val vertical = rememberScrollState()
     var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
     val measurer = rememberTextMeasurer()
@@ -442,169 +542,146 @@ private fun YamlEditorPanel(
         color = Color(0xFF9E9E9E),
     )
 
-    Box(
-        modifier
-            .clip(shape)
-            .then(
-                if (backdrop != null) {
-                    Modifier.drawBackdrop(
-                        backdrop = backdrop,
-                        shape = { shape },
-                        effects = { blur(8.dp.toPx(), 8.dp.toPx()) },
-                    )
-                } else {
-                    Modifier
-                },
-            ),
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(
+        Text(
+            text = title,
+            fontSize = 17.sp,
+            fontWeight = FontWeight.Bold,
+            color = colors.onSurface,
+            modifier = Modifier.weight(1f),
+        )
+    }
+    Spacer(Modifier.height(8.dp))
+    Box(
+        Modifier
+            .weight(1f)
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(colors.surfaceVariant.copy(alpha = 0.55f))
+            .verticalScroll(vertical),
+    ) {
+        Row(
             Modifier
-                .fillMaxSize()
-                .background(container, shape)
-                .padding(horizontal = 14.dp, vertical = 12.dp),
-        ) {
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = title,
-                    fontSize = 17.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = colors.onSurface,
-                    modifier = Modifier.weight(1f),
-                )
-            }
-            Spacer(Modifier.height(8.dp))
-            Box(
-                Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(colors.surfaceVariant.copy(alpha = 0.55f))
-                    .verticalScroll(vertical),
-            ) {
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .drawBehind {
-                            val result = layout ?: return@drawBehind
-                            val padTopPx = padTop.toPx()
-                            val textLeft = gutterWidth.toPx()
+                .fillMaxWidth()
+                .drawBehind {
+                    val result = layout ?: return@drawBehind
+                    val padTopPx = padTop.toPx()
+                    val textLeft = gutterWidth.toPx()
 
-                            // 行号列与正文之间的分隔线。
-                            drawLine(
-                                color = Color(0x332F6FED),
-                                start = Offset(textLeft, 0f),
-                                end = Offset(textLeft, this.size.height),
-                                strokeWidth = 1f,
-                            )
-
-                            // 缩进辅助线：每 2 个空格一根。
-                            val step = charWidth * 2
-                            for (level in 1..maxIndent) {
-                                val x = textLeft + step * level
-                                drawLine(
-                                    color = Color(0x222F6FED),
-                                    start = Offset(x, 0f),
-                                    end = Offset(x, this.size.height),
-                                    strokeWidth = 1f,
-                                )
-                            }
-
-                            // 行号：只在每个逻辑行的第一个视觉行上画。
-                            for (visual in 0 until result.lineCount) {
-                                val startOffset = result.getLineStart(visual)
-                                val logicalIndex = lineStarts.indexOf(startOffset)
-                                if (logicalIndex < 0) continue
-                                val label = (logicalIndex + 1).toString()
-                                val measured = measurer.measure(
-                                    text = AnnotatedString(label),
-                                    style = gutterStyle,
-                                )
-                                val baseline = result.getLineBaseline(visual)
-                                val dy = padTopPx + baseline - measured.getLineBaseline(0)
-                                drawText(
-                                    textLayoutResult = measured,
-                                    topLeft = Offset(
-                                        textLeft - measured.size.width - 6.dp.toPx(),
-                                        dy,
-                                    ),
-                                )
-                            }
-
-                            // ↲：这一逻辑行被软换行时，在最后一段末尾标一下。
-                            for ((index, lineStart) in lineStarts.withIndex()) {
-                                val lineEndExclusive =
-                                    if (index + 1 < lineStarts.size) lineStarts[index + 1] - 1 else text.length
-                                if (lineEndExclusive <= lineStart) continue
-                                val lastChar = lineEndExclusive - 1
-                                val firstVisual = result.getLineForOffset(lineStart)
-                                val lastVisual = result.getLineForOffset(lastChar)
-                                if (firstVisual == lastVisual) continue
-                                val marker = measurer.measure(
-                                    text = AnnotatedString("↲"),
-                                    style = markerStyle,
-                                )
-                                val x = textLeft + result.getHorizontalPosition(
-                                    lastChar,
-                                    usePrimaryDirection = false,
-                                ) + 4.dp.toPx()
-                                drawText(
-                                    textLayoutResult = marker,
-                                    topLeft = Offset(
-                                        x,
-                                        padTopPx + result.getLineBaseline(lastVisual) -
-                                            marker.getLineBaseline(0),
-                                    ),
-                                )
-                            }
-                        }
-                        .padding(top = padTop, bottom = 10.dp),
-                ) {
-                    Spacer(Modifier.width(gutterWidth))
-                    BasicTextField(
-                        value = text,
-                        onValueChange = { text = it },
-                        onTextLayout = { layout = it },
-                        textStyle = TextStyle(
-                            fontSize = textSize,
-                            lineHeight = lineHeight,
-                            fontFamily = FontFamily.Monospace,
-                            color = colors.onSurface,
-                        ),
-                        cursorBrush = SolidColor(colors.primary),
-                        visualTransformation = YamlHighlight(
-                            keyColor = colors.primary,
-                            stringColor = Color(0xFFD08A22),
-                            numberColor = Color(0xFF2A9D8F),
-                            keywordColor = Color(0xFF9B59B6),
-                            plainColor = Color(0xFF3E8E41),
-                            commentColor = Color(0xFF9A9A9A),
-                        ),
-                        modifier = Modifier.weight(1f).padding(end = 12.dp),
+                    // 行号列与正文之间的分隔线。
+                    drawLine(
+                        color = Color(0x332F6FED),
+                        start = Offset(textLeft, 0f),
+                        end = Offset(textLeft, this.size.height),
+                        strokeWidth = 1f,
                     )
+
+                    // 缩进辅助线：每 2 个空格一根。
+                    val step = charWidth * 2
+                    for (level in 1..maxIndent) {
+                        val x = textLeft + step * level
+                        drawLine(
+                            color = Color(0x222F6FED),
+                            start = Offset(x, 0f),
+                            end = Offset(x, this.size.height),
+                            strokeWidth = 1f,
+                        )
+                    }
+
+                    // 行号：只在每个逻辑行的第一个视觉行上画。
+                    for (visual in 0 until result.lineCount) {
+                        val startOffset = result.getLineStart(visual)
+                        val logicalIndex = lineStarts.indexOf(startOffset)
+                        if (logicalIndex < 0) continue
+                        val label = (logicalIndex + 1).toString()
+                        val measured = measurer.measure(
+                            text = AnnotatedString(label),
+                            style = gutterStyle,
+                        )
+                        val baseline = result.getLineBaseline(visual)
+                        val dy = padTopPx + baseline - measured.getLineBaseline(0)
+                        drawText(
+                            textLayoutResult = measured,
+                            topLeft = Offset(
+                                textLeft - measured.size.width - 6.dp.toPx(),
+                                dy,
+                            ),
+                        )
+                    }
+
+                    // ↲：这一逻辑行被软换行时，在最后一段末尾标一下。
+                    for ((index, lineStart) in lineStarts.withIndex()) {
+                        val lineEndExclusive =
+                            if (index + 1 < lineStarts.size) lineStarts[index + 1] - 1 else text.length
+                        if (lineEndExclusive <= lineStart) continue
+                        val lastChar = lineEndExclusive - 1
+                        val firstVisual = result.getLineForOffset(lineStart)
+                        val lastVisual = result.getLineForOffset(lastChar)
+                        if (firstVisual == lastVisual) continue
+                        val marker = measurer.measure(
+                            text = AnnotatedString("↲"),
+                            style = markerStyle,
+                        )
+                        val x = textLeft + result.getHorizontalPosition(
+                            lastChar,
+                            usePrimaryDirection = false,
+                        ) + 4.dp.toPx()
+                        drawText(
+                            textLayoutResult = marker,
+                            topLeft = Offset(
+                                x,
+                                padTopPx + result.getLineBaseline(lastVisual) -
+                                    marker.getLineBaseline(0),
+                            ),
+                        )
+                    }
                 }
-            }
-            Spacer(Modifier.height(10.dp))
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                Button(
-                    onClick = onDismiss,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text("取消")
-                }
-                Button(
-                    onClick = { onSave(text) },
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColorsPrimary(),
-                ) {
-                    Text("保存")
-                }
-            }
+                .padding(top = padTop, bottom = 10.dp),
+        ) {
+            Spacer(Modifier.width(gutterWidth))
+            BasicTextField(
+                value = text,
+                onValueChange = { text = it },
+                onTextLayout = { layout = it },
+                textStyle = TextStyle(
+                    fontSize = textSize,
+                    lineHeight = lineHeight,
+                    fontFamily = FontFamily.Monospace,
+                    color = colors.onSurface,
+                ),
+                cursorBrush = SolidColor(colors.primary),
+                visualTransformation = YamlHighlight(
+                    keyColor = colors.primary,
+                    stringColor = Color(0xFFD08A22),
+                    numberColor = Color(0xFF2A9D8F),
+                    keywordColor = Color(0xFF9B59B6),
+                    plainColor = Color(0xFF3E8E41),
+                    commentColor = Color(0xFF9A9A9A),
+                ),
+                modifier = Modifier.weight(1f).padding(end = 12.dp),
+            )
+        }
+    }
+    Spacer(Modifier.height(10.dp))
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Button(
+            onClick = onDismiss,
+            modifier = Modifier.weight(1f),
+        ) {
+            Text("取消")
+        }
+        Button(
+            onClick = { onSave(text) },
+            modifier = Modifier.weight(1f),
+            colors = ButtonDefaults.buttonColorsPrimary(),
+        ) {
+            Text("保存")
         }
     }
 }
@@ -700,29 +777,6 @@ private class YamlHighlight(
     }
 }
 
-@Composable
-private fun TrashGlyph(color: Color) {
-    Canvas(Modifier.size(18.dp)) {
-        val stroke = 1.6.dp.toPx()
-        val left = size.width * 0.22f
-        val right = size.width * 0.78f
-        val top = size.height * 0.3f
-        drawLine(color, Offset(left, top), Offset(right, top), stroke)
-        drawLine(
-            color,
-            Offset(size.width * 0.4f, size.height * 0.2f),
-            Offset(size.width * 0.6f, size.height * 0.2f),
-            stroke,
-        )
-        drawRoundRect(
-            color = color,
-            topLeft = Offset(left + stroke, top + stroke),
-            size = Size(right - left - stroke * 2, size.height * 0.52f),
-            cornerRadius = androidx.compose.ui.geometry.CornerRadius(2.dp.toPx()),
-            style = Stroke(stroke),
-        )
-    }
-}
 
 private fun queryDisplayName(context: Context, uri: Uri): String? = runCatching {
     context.contentResolver

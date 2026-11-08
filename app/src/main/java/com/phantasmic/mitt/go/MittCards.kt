@@ -9,8 +9,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
+import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 /**
@@ -51,4 +53,15 @@ fun OutlineCard(
     ) {
         Column(Modifier.fillMaxWidth(), content = content)
     }
+}
+
+/** 分组标题：小而灰，跟卡片错开一点。设置页和关于页共用同一个。 */
+@Composable
+fun SectionHeader(text: String, modifier: Modifier = Modifier) {
+    Text(
+        text = text,
+        fontSize = 12.sp,
+        color = MiuixTheme.colorScheme.onSurfaceSecondary,
+        modifier = modifier.padding(start = 6.dp, top = 12.dp, bottom = 6.dp),
+    )
 }

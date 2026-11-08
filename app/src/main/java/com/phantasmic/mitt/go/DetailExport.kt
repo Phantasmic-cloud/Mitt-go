@@ -1,48 +1,13 @@
 package com.phantasmic.mitt.go
 
-import android.content.ContentValues
 import android.content.Context
-import android.os.Environment
-import android.provider.MediaStore
 import android.util.Base64
 import org.json.JSONArray
 import org.json.JSONObject
 import java.nio.charset.CharacterCodingException
 import java.nio.charset.CodingErrorAction
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-
-/** 所有导出都落到 `Download/Mitt-go/`。 */
-object DownloadStore {
-    fun save(context: Context, name: String, mime: String, bytes: ByteArray): String? = runCatching {
-        val values = ContentValues().apply {
-            put(MediaStore.Downloads.DISPLAY_NAME, name)
-            put(MediaStore.Downloads.MIME_TYPE, mime)
-            put(
-                MediaStore.Downloads.RELATIVE_PATH,
-                Environment.DIRECTORY_DOWNLOADS + "/Mitt-go",
-            )
-        }
-        val resolver = context.contentResolver
-        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-            ?: return@runCatching null
-        resolver.openOutputStream(uri)?.use { it.write(bytes) } ?: return@runCatching null
-        name
-    }.getOrNull()
-}
 
 /** 正文在详情页/导出时的类型判定，会做一次内容嗅探，不只看 Content-Type。 */
-enum class BodyKind(val label: String, val extension: String, val mime: String) {
-    JSON("JSON", "json", "application/json"),
-    HTML("HTML", "html", "text/html"),
-    XML("XML", "xml", "application/xml"),
-    JS("JS", "js", "application/javascript"),
-    CSS("CSS", "css", "text/css"),
-    TEXT("TEXT", "txt", "text/plain"),
-    BIN("BIN", "bin", "application/octet-stream"),
-}
-
 object BodyCodec {
     /** 原始字节：base64 的正文解回二进制，文本正文按 UTF-8 编码。 */
     fun rawBytes(body: BodyView): ByteArray = runCatching {
@@ -74,17 +39,45 @@ object BodyCodec {
         }
     }.getOrNull()
 
-    fun kind(contentType: String, body: BodyView): BodyKind {
-        val text = textOrNull(body) ?: return BodyKind.BIN
-        prettyJson(text)?.let { return BodyKind.JSON }
+    /** 详情页一次算好类型和正文：正文只 parse + 美化一遍，别让 kind 和 displayText 各算一次。 */
+    data class Render(val kind: ContentKind, val text: String)
+
+    fun render(contentType: String, body: BodyView): Render {
+        val text = textOrNull(body) ?: return Render(ContentKind.BIN, binaryPreview(body))
+        prettyJson(text)?.let { return Render(ContentKind.JSON, it) }
+        val kind = kindOfText(contentType, text)
+        return Render(kind, if (kind == ContentKind.BIN) binaryPreview(body) else text)
+    }
+
+    /**
+     * 导出用的文件内容。和详情页看到的一致：JSON 就是已经格式化好的缩进版，
+     * 其它文本按 UTF-8 原样写出，二进制仍然是原始字节。
+     *
+     * 保存正文一律走这里——以前直接写 [rawBytes]，导出的 .json 是一行压缩版，
+     * 和详情页预览对不上。
+     */
+    data class Export(val bytes: ByteArray, val kind: ContentKind)
+
+    fun export(contentType: String, body: BodyView): Export {
+        val render = render(contentType, body)
+        val bytes = if (render.kind == ContentKind.BIN) {
+            rawBytes(body)
+        } else {
+            render.text.toByteArray(Charsets.UTF_8)
+        }
+        return Export(bytes, render.kind)
+    }
+
+    /** 正文不是 JSON 时的类型判定，不碰 prettyJson。 */
+    private fun kindOfText(contentType: String, text: String): ContentKind {
         val type = contentType.lowercase()
         return when {
-            type.contains("json") -> BodyKind.JSON
-            type.contains("html") -> BodyKind.HTML
-            type.contains("javascript") -> BodyKind.JS
-            type.contains("css") -> BodyKind.CSS
-            type.contains("xml") -> BodyKind.XML
-            else -> if (looksPrintable(text)) BodyKind.TEXT else BodyKind.BIN
+            type.contains("json") -> ContentKind.JSON
+            type.contains("html") -> ContentKind.HTML
+            type.contains("javascript") -> ContentKind.JS
+            type.contains("css") -> ContentKind.CSS
+            type.contains("xml") -> ContentKind.XML
+            else -> if (looksPrintable(text)) ContentKind.TEXT else ContentKind.BIN
         }
     }
 
@@ -106,14 +99,6 @@ object BodyCodec {
         return out.toString()
     }
 
-    fun displayText(contentType: String, body: BodyView): String {
-        val kind = kind(contentType, body)
-        if (kind == BodyKind.BIN) return binaryPreview(body)
-        val text = textOrNull(body).orEmpty()
-        if (kind == BodyKind.JSON) return prettyJson(text) ?: text
-        return text
-    }
-
     private fun looksPrintable(text: String): Boolean {
         if (text.isEmpty()) return true
         val sample = text.take(2048)
@@ -124,13 +109,11 @@ object BodyCodec {
 
 /** 详情页顶栏保存菜单的三项动作。 */
 object DetailExport {
-    private fun stamp(): String =
-        SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
 
     fun saveRequestAndResponse(context: Context, detail: CaptureDetail): String? {
         val body = buildString {
             appendLine("Mitt-go 请求详情")
-            appendLine("时间: ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date(detail.startedAt))}")
+            appendLine("时间: ${TimeFmt.stampMillis(detail.startedAt)}")
             appendLine("方法: ${detail.method} ${detail.proto}")
             appendLine("URL: ${detail.url}")
             appendLine("IP: ${detail.remoteAddr.ifBlank { "-" }}")
@@ -147,7 +130,7 @@ object DetailExport {
         }
         return DownloadStore.save(
             context = context,
-            name = "Mitt-go_${detail.method.ifBlank { "http" }}_${stamp()}.txt",
+            name = "Mitt-go_${detail.method.ifBlank { "http" }}_${TimeFmt.fileStamp()}.txt",
             mime = "text/plain",
             bytes = body.toByteArray(Charsets.UTF_8),
         )
@@ -156,16 +139,14 @@ object DetailExport {
     fun saveBody(context: Context, detail: CaptureDetail, response: Boolean): String? {
         val headers = if (response) detail.responseHeaders else detail.requestHeaders
         val body = if (response) detail.responseBody else detail.requestBody
-        val kind = BodyCodec.kind(headerOf(headers), body)
+        // 落盘的内容和详情页预览同源：JSON 是格式化后的缩进版。
+        val export = BodyCodec.export(headerOf(headers, "Content-Type"), body)
         val suffix = if (response) "resp" else "req"
         return DownloadStore.save(
             context = context,
-            name = "Mitt-go_${detail.method.ifBlank { "http" }}_${stamp()}_$suffix.${kind.extension}",
-            mime = kind.mime,
-            bytes = BodyCodec.rawBytes(body),
+            name = "Mitt-go_${detail.method.ifBlank { "http" }}_${TimeFmt.fileStamp()}_$suffix.${export.kind.extension}",
+            mime = export.kind.mime,
+            bytes = export.bytes,
         )
     }
-
-    private fun headerOf(headers: List<HeaderItem>): String =
-        headers.firstOrNull { it.name.equals("Content-Type", ignoreCase = true) }?.value.orEmpty()
 }

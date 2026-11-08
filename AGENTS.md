@@ -4,11 +4,11 @@
 
 ## 1. 现状
 
-- 版本 `2.0.1`（versionCode 76），minSdk 33 / targetSdk 36 / compileSdk 37，仅 `arm64-v8a`
+- 版本 `2.2.8`（versionCode 95），minSdk 33 / targetSdk 36 / compileSdk 37，仅 `arm64-v8a`
 - 内核：Go 1.26+ + `go-mitmproxy v1.9.4`，编成 `libmittgocore.so`（`-buildmode=c-shared`），JNI 直调
 - 平台侧：Kotlin + Jetpack Compose 1.12.0 + Miuix 0.9.4
 
-已经做完的：导航栈与转场、四项一级页 Pager、抓包列表/详情/导出、已读变暗、搜索与高亮、按 URL/域名两种视图、域名过滤（白/黑名单）、历史落盘、证书页（内置 + 印度两模式、三种导出方式）、旁路上传（YAML 导入、编辑器、正则命中、异步 POST、大小限制、重试、通知）。
+已经做完的：导航栈与转场、四项一级页 Pager、抓包列表/详情/导出、已读变暗、搜索与高亮、按 URL/域名两种视图、域名过滤（白/黑名单）、历史落盘、证书页（内置 + 印度两模式、三种导出方式）、旁路上传（YAML 导入、编辑器、正则命中、异步 POST、大小限制、重试、通知）、检查更新（GitHub release 版本比对、下载进度、覆盖安装）、上游代理（抓到的流量在 MITM 之后走指定的 HTTP 代理出网，可带 Basic 认证、运行中热改）、统一的液态玻璃质感与浮层（弹窗/菜单共用一套 API，自带遮罩、进出场和返回键处理）、抓包页下拉的橡皮筋回弹、一级页悬浮胶囊/按钮随页面平移（`ui/PageChrome.kt`）、详情正文保存与预览同源（JSON 落盘也是缩进版）。
 
 ## 2. 目录
 
@@ -49,11 +49,8 @@ Kotlin 侧只有一个入口 `GoCoreJni`（`GoCoreJni.kt`），全部是 `extern
 | `load()` | 懒加载 `.so`，失败原因保留在 `failureMessage()`，不要直接 `System.loadLibrary` |
 | `start(coreJson: String): String` | 启动内核，返回空串表示成功 |
 | `stop()` | 停止内核 |
-| `snapshot(): String` | 全量快照（运行状态、端口、最近记录摘要） |
-| `record(id): String` | 单条完整记录，找不到返回空对象 |
 | `events(since: Long, limit: Int): String` | 增量变更，返回 `{seq, records}` |
 | `clear()` | 清空内核里的记录 |
-| `dump(limit, maxBody): String` | 导出完整记录（用于落盘历史），`maxBody` 是每条 body 的上限字节 |
 | `setSocks(enabled): String` | 运行中开关 SOCKS5 |
 | `setDomainFilter(config): String` | 下发域名过滤规则 |
 | `setAsyncUpload(config): String` | 下发旁路上传配置 |
@@ -165,6 +162,9 @@ YAML 由 Kotlin 读成字符串，一次性打包下发：
 | `AsyncUploadStore` | 配置文件读写、`revision` 变更信号、YAML 文本、导出 |
 | `AsyncUploadRuntime` | 把开关 + 全部 YAML 下发给内核，并 `drain()` 事件弹通知 |
 | `AppSettings` | 所有开关的持久化（含 `certMode`、`asyncUploadEnabled`、域名过滤规则） |
+| `ui/Glass.kt` | 全 App 唯一的玻璃实现：`GlassLevel`（Pill/Menu/Dialog）+ `GlassDefaults` 参数、`rememberPageBackdrop()` / `Modifier.pageBackdrop()` 取景、`GlassCard`、`CircleGlassButton` |
+| `ui/MittOverlay.kt` | 浮层入口：`MittModal`（居中弹窗）、`GlassPopover`（贴按钮的菜单）、`GlassMenuItem`、`MittMotion` 动效参数 |
+| `ui/PageChrome.kt` | 一级页悬浮元素（标题胶囊、三点按钮、日志导出）的容器：按 `PagerState.getOffsetDistanceInPages()` 平移，跟着页面一起滑进滑出，同时留在取景图层外面 |
 
 `MittGoRoot` 里的导航栈是自建的：`NavEntry`（`Settings` / `Domain` / `History` / `Detail` / `AsyncUpload`）+ `NavLayer` 列表 + `Animatable` 驱动 `translationX`，进入 320ms、退出 280ms。新增二级页时加一个 `NavEntry` 分支和对应的 `when` 就够。
 
@@ -184,7 +184,14 @@ CI（`.github/workflows/build.yml`）走同一套：checkout → JDK 17 → Andr
 
 1. **JNI 名字不能被混淆**。`GoCoreJni` 的 `external` 方法名就是 C 侧符号名，`proguard-rules.pro` 里必须 keep，否则 Release 包一启动就 `UnsatisfiedLinkError`。
 2. **16 KB 页对齐**。`.so` 链接时要 `-Wl,-z,max-page-size=16384`，并且 `packaging { jniLibs { useLegacyPackaging = true } }`，否则 Android 15+ 设备上可能装不上或映射失败。
-3. **Compose 里的液态玻璃 backdrop 不能成环**。搜索框/浮层要挂在页面内部的 `layerBackdrop` 上，直接传页面级 backdrop 会导致渲染树递归，最终 `RenderNode::prepareTreeImpl` 栈溢出闪退。
+3. **液态玻璃的取景图层不能成环**。规则有两条：
+   - 页面自己建取景图层（`rememberPageBackdrop()` + `Modifier.pageBackdrop()`），玻璃模糊的就是它记录的内容；
+   - 浮层（菜单/弹窗）必须画在这个记录节点的**兄弟位置**，画在记录节点内部会让 hwui 的
+     RenderNode 树成环，`RenderNode::prepareTreeImpl` 递归到栈溢出（SIGSEGV）。
+   唯一例外是抓包页的搜索框/FAB：它们在页面内部的记录节点里，用的是页面自建的独立
+   backdrop（历史上验证过可用）。另外浮层只在打开时记录，静态页面不要常驻全屏 `layerBackdrop`。
+   - 一级页的悬浮元素（标题胶囊、三点按钮、日志导出）不能直接放在 Pager 外面（不跟手），
+     也不能塞进页面（玻璃成环），统一用 `ui/PageChrome.kt` 的 `PageChrome`。
 4. **YAML 编辑器的高亮绝不能改字符数**。`OffsetMapping` 要求变换前后长度一致，`String.lines()` 会吃掉 `\r`，必须自己按 `\n` 扫描；长度不一致就直接放弃高亮。
 5. **Miuix 的 `ButtonDefaults.buttonColors` 参数名是 `color`**，不是 `containerColor`。
 

@@ -45,21 +45,18 @@ internal object GoCoreJni {
 
     external fun stop()
 
-    external fun snapshot(): String
-
-    external fun record(id: String): String
-
     external fun events(since: Long, limit: Int): String
 
     external fun clear()
-
-    external fun dump(limit: Int, maxBody: Int): String
 
     /** Returns an empty string on success, otherwise the error message. */
     external fun setSocks(enabled: Boolean): String
 
     /** 域名过滤规则（mode + white/black），返回空串表示成功。 */
     external fun setDomainFilter(config: String): String
+
+    /** 上游代理配置（enabled + host/port/user/password），返回空串表示成功。 */
+    external fun setUpstream(config: String): String
 
     /** 旁路上传配置（enabled + configs），返回空串表示成功。 */
     external fun setAsyncUpload(config: String): String

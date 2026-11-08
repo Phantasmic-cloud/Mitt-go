@@ -29,12 +29,35 @@ enum class ThemeMode(val label: String) {
 /** 关键词高亮规则：命中正则的整条 URL 用这个颜色。 */
 data class HighlightRule(val colorArgb: Int, val pattern: String)
 
+/**
+ * 上游代理：抓到的流量在 MITM 之后先送到这个 HTTP 代理再出网
+ * （典型用法：链到手机/局域网里已有的代理端口）。
+ *
+ * 地址和端口对上以后可以带 Basic 认证；用户名留空就不带认证头。
+ */
+data class UpstreamProxy(
+    val enabled: Boolean = false,
+    val host: String = "127.0.0.1",
+    val port: Int = 7890,
+    val username: String = "",
+    val password: String = "",
+) {
+    /** 摘要里显示的 `host:port`。 */
+    val address: String get() = "$host:$port"
+
+    /** 保存前的基本校验：地址非空且不含空白，端口在合法范围。 */
+    val isValid: Boolean
+        get() = host.isNotBlank() && host.none { it.isWhitespace() } && port in 1..65535
+}
+
 data class MittSettings(
     val proxyMode: ProxyMode = ProxyMode.VPN_TUN,
     val socksEnabled: Boolean = false,
     val httpPort: Int = 9099,
     val tunnelPort: Int = 9098,
     val socksPort: Int = 1080,
+    /** 上游代理：抓到的请求先送到它再出网。 */
+    val upstream: UpstreamProxy = UpstreamProxy(),
     val filterMode: FilterMode = FilterMode.OFF,
     val whitelist: Set<String> = emptySet(),
     val blacklist: Set<String> = emptySet(),
@@ -67,6 +90,11 @@ object AppSettings {
     private const val KEY_HTTP_PORT = "http_port"
     private const val KEY_TUNNEL_PORT = "tunnel_port"
     private const val KEY_SOCKS_PORT = "socks_port"
+    private const val KEY_UPSTREAM_ENABLED = "upstream_enabled"
+    private const val KEY_UPSTREAM_HOST = "upstream_host"
+    private const val KEY_UPSTREAM_PORT = "upstream_port"
+    private const val KEY_UPSTREAM_USER = "upstream_user"
+    private const val KEY_UPSTREAM_PASSWORD = "upstream_password"
     private const val KEY_FILTER_MODE = "filter_mode"
     private const val KEY_WHITELIST = "whitelist"
     private const val KEY_BLACKLIST = "blacklist"
@@ -96,6 +124,14 @@ object AppSettings {
             httpPort = sp.getInt(KEY_HTTP_PORT, 9099),
             tunnelPort = sp.getInt(KEY_TUNNEL_PORT, 9098),
             socksPort = sp.getInt(KEY_SOCKS_PORT, 1080),
+            upstream = UpstreamProxy(
+                enabled = sp.getBoolean(KEY_UPSTREAM_ENABLED, false),
+                host = sp.getString(KEY_UPSTREAM_HOST, null)?.takeIf { it.isNotBlank() }
+                    ?: "127.0.0.1",
+                port = sp.getInt(KEY_UPSTREAM_PORT, 7890).coerceIn(1, 65535),
+                username = sp.getString(KEY_UPSTREAM_USER, "").orEmpty(),
+                password = sp.getString(KEY_UPSTREAM_PASSWORD, "").orEmpty(),
+            ),
             filterMode = runCatching {
                 FilterMode.valueOf(enumOf(KEY_FILTER_MODE, FilterMode.OFF.name))
             }.getOrDefault(FilterMode.OFF),
@@ -131,6 +167,11 @@ object AppSettings {
             .putInt(KEY_HTTP_PORT, settings.httpPort)
             .putInt(KEY_TUNNEL_PORT, settings.tunnelPort)
             .putInt(KEY_SOCKS_PORT, settings.socksPort)
+            .putBoolean(KEY_UPSTREAM_ENABLED, settings.upstream.enabled)
+            .putString(KEY_UPSTREAM_HOST, settings.upstream.host)
+            .putInt(KEY_UPSTREAM_PORT, settings.upstream.port)
+            .putString(KEY_UPSTREAM_USER, settings.upstream.username)
+            .putString(KEY_UPSTREAM_PASSWORD, settings.upstream.password)
             .putString(KEY_FILTER_MODE, settings.filterMode.name)
             .putStringSet(KEY_WHITELIST, settings.whitelist)
             .putStringSet(KEY_BLACKLIST, settings.blacklist)

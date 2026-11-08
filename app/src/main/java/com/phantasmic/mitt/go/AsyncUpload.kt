@@ -4,14 +4,11 @@ import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
-import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
-import android.os.Environment
-import android.provider.MediaStore
 import java.io.File
 import java.util.UUID
 
@@ -25,7 +22,6 @@ data class AsyncConfig(
     val raw: String,
 ) {
     val matchCount: Int get() = matchPatterns.size
-    val firstPattern: String get() = matchPatterns.firstOrNull().orEmpty()
 }
 
 /**
@@ -103,21 +99,16 @@ object AsyncUploadStore {
     }
 
     /** 导出成 `Mitt-<name>.yaml` 到 Download/Mitt-go，返回文件名。 */
-    fun export(context: Context, config: AsyncConfig): String? = runCatching {
+    fun export(context: Context, config: AsyncConfig): String? {
         val safeName = config.name.replace(Regex("""[\\/:*?"<>|]"""), "_").ifBlank { "async" }
         val fileName = "Mitt-$safeName.yaml"
-        val values = ContentValues().apply {
-            put(MediaStore.Downloads.DISPLAY_NAME, fileName)
-            put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream")
-            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Mitt-go")
-        }
-        val resolver = context.contentResolver
-        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-            ?: return@runCatching null
-        resolver.openOutputStream(uri)?.use { it.write(config.raw.toByteArray()) }
-            ?: return@runCatching null
-        fileName
-    }.getOrNull()
+        return DownloadStore.save(
+            context,
+            fileName,
+            "application/octet-stream",
+            config.raw.toByteArray(Charsets.UTF_8),
+        )
+    }
 
     private fun looksLikeConfig(text: String): Boolean {
         val hasMatch = lineValue(text, "match_url") != null || matchPatterns(text).isNotEmpty()

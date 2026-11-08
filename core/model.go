@@ -3,8 +3,6 @@ package mittgo
 import (
 	"encoding/base64"
 	"net/http"
-	"sort"
-	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -12,7 +10,9 @@ import (
 
 const (
 	defaultMaxRecords = 500
-	defaultMaxBody    = 1024 * 1024
+	// Kotlin 侧每次只拉 128 KiB 正文（server.go 的 Changes），再多也不会显示，
+	// 所以内核只留同样大小：大响应不再整段复制 1 MiB，内存和 CPU 都省一截。
+	defaultMaxBody = 128 * 1024
 )
 
 type config struct {
@@ -20,6 +20,12 @@ type config struct {
 	TunnelPort  int    `json:"tunnelPort"`
 	SocksPort   int    `json:"socksPort"`
 	SocksEnable bool   `json:"socksEnabled"`
+	// 上游代理：命中抓包的流量在 MITM 之后先送到这个 HTTP 代理再出网。
+	UpstreamEnable bool   `json:"upstreamEnabled"`
+	UpstreamHost   string `json:"upstreamHost"`
+	UpstreamPort   int    `json:"upstreamPort"`
+	UpstreamUser   string `json:"upstreamUser"`
+	UpstreamPass   string `json:"upstreamPassword"`
 	CaDir       string `json:"caDir"`
 	CaCertPem   string `json:"caCertPem"`
 	CaKeyPem    string `json:"caKeyPem"`
@@ -54,32 +60,6 @@ type recordDetail struct {
 	RequestBody    bodyView   `json:"requestBody"`
 	ResponseBody   bodyView   `json:"responseBody"`
 	Error          string     `json:"error"`
-}
-
-type recordSummary struct {
-	ID          string `json:"id"`
-	UID         int    `json:"uid"`
-	PackageName string `json:"packageName"`
-	StartedAt   int64  `json:"startedAt"`
-	DurationMs  int64  `json:"durationMs"`
-	Method      string `json:"method"`
-	Proto       string `json:"proto"`
-	URL         string `json:"url"`
-	Host        string `json:"host"`
-	StatusCode  int    `json:"statusCode"`
-	ContentType string `json:"contentType"`
-	Size        int    `json:"size"`
-	Error       string `json:"error"`
-}
-
-type snapshot struct {
-	Running      bool            `json:"running"`
-	HTTPPort     int             `json:"httpPort"`
-	TunnelPort   int             `json:"tunnelPort"`
-	SocksPort    int             `json:"socksPort"`
-	SocksEnabled bool            `json:"socksEnabled"`
-	Total        int             `json:"total"`
-	Records      []recordSummary `json:"records"`
 }
 
 type changeEntry struct {
@@ -190,78 +170,6 @@ func (s *recordStore) get(id string) (recordDetail, bool) {
 		return recordDetail{}, false
 	}
 	return *rec, true
-}
-
-func (s *recordStore) list() []recordSummary {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := make([]recordSummary, 0, len(s.order))
-	for _, id := range s.order {
-		rec := s.records[id]
-		if rec == nil {
-			continue
-		}
-		contentType := ""
-		if rec.ResponseHeader != nil {
-			contentType = firstHeader(rec.ResponseHeader, "Content-Type")
-		}
-		size := rec.ResponseBody.Size
-		if size == 0 {
-			size = bodySize(rec.ResponseHeader)
-		}
-		out = append(out, recordSummary{
-			ID:          rec.ID,
-			UID:         rec.UID,
-			PackageName: rec.PackageName,
-			StartedAt:   rec.StartedAt,
-			DurationMs:  rec.DurationMs,
-			Method:      rec.Method,
-			Proto:       rec.Proto,
-			URL:         rec.URL,
-			Host:        hostFromURL(rec.URL),
-			StatusCode:  rec.StatusCode,
-			ContentType: contentType,
-			Size:        size,
-			Error:       rec.Error,
-		})
-	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].StartedAt > out[j].StartedAt })
-	return out
-}
-
-func firstHeader(h headerView, key string) string {
-	for k, values := range h {
-		if strings.EqualFold(k, key) && len(values) > 0 {
-			return values[0]
-		}
-	}
-	return ""
-}
-
-func bodySize(h headerView) int {
-	value := firstHeader(h, "Content-Length")
-	if value == "" {
-		return 0
-	}
-	var n int
-	for _, c := range value {
-		if c < '0' || c > '9' {
-			return 0
-		}
-		n = n*10 + int(c-'0')
-	}
-	return n
-}
-
-func hostFromURL(raw string) string {
-	withoutScheme := raw
-	if idx := strings.Index(withoutScheme, "://"); idx >= 0 {
-		withoutScheme = withoutScheme[idx+3:]
-	}
-	if idx := strings.IndexByte(withoutScheme, '/'); idx >= 0 {
-		withoutScheme = withoutScheme[:idx]
-	}
-	return withoutScheme
 }
 
 func copyHeader(h http.Header) headerView {

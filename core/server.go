@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -22,10 +23,9 @@ import (
 	"github.com/lqqyt2423/go-mitmproxy/addon"
 	"github.com/lqqyt2423/go-mitmproxy/proxy"
 	"path"
+	"runtime/debug"
 	"sync/atomic"
 )
-
-const version = "1.0.0"
 
 var (
 	stateMu     sync.Mutex
@@ -117,6 +117,10 @@ func Start(configJSON string) error {
 		return fmt.Errorf("decode config: %w", err)
 	}
 	cfg = defaultConfig(cfg)
+	// 抓包时 TLS、gzip、JSON 一直在分配内存，Go 默认 GOGC=100 会让 GC 跑得很勤。
+	// 放宽到 200、堆上限压到 192 MiB：GC 次数少一半，内存也不会失控。
+	debug.SetGCPercent(200)
+	debug.SetMemoryLimit(192 << 20)
 	if err := validatePort(cfg.HTTPPort); err != nil {
 		return err
 	}
@@ -163,6 +167,15 @@ func Start(configJSON string) error {
 	}
 	p.AddAddon(&addon.Decoder{})
 	p.AddAddon(newRecorderAddon(globalStore))
+	// 上游代理：出站连接要不要走代理由运行态决定，运行中可以热改，不用重启。
+	// 配置有问题时退回直连，不要因为一个设置项启动不了抓包。
+	if err := applyUpstream(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "mittgo: upstream proxy ignored: %v\n", err)
+		_ = applyUpstream(config{})
+	}
+	p.SetUpstreamProxy(func(*http.Request) (*url.URL, error) {
+		return UpstreamURL(), nil
+	})
 	// 域名过滤：命中“不抓”的域名直接走隧道，不做 MITM。
 	p.SetShouldInterceptRule(func(req *http.Request) bool {
 		return domainAllowed(req.URL.Hostname())
@@ -515,38 +528,6 @@ func SetSocksEnabled(enabled bool) error {
 	return nil
 }
 
-// Snapshot returns the current proxy state and lightweight request summaries.
-func Snapshot() string {
-	stateMu.Lock()
-	cfg := lastConfig
-	running := activeState != nil
-	if activeState != nil {
-		cfg = activeState.cfg
-	}
-	stateMu.Unlock()
-	records := globalStore.list()
-	out, _ := json.Marshal(snapshot{
-		Running:      running,
-		HTTPPort:     cfg.HTTPPort,
-		TunnelPort:   cfg.TunnelPort,
-		SocksPort:    cfg.SocksPort,
-		SocksEnabled: cfg.SocksEnable,
-		Total:        len(records),
-		Records:      records,
-	})
-	return string(out)
-}
-
-// GetRecord returns full request and response data for one capture.
-func GetRecord(id string) string {
-	rec, ok := globalStore.get(id)
-	if !ok {
-		return "{}"
-	}
-	out, _ := json.Marshal(rec)
-	return string(out)
-}
-
 // ClearRecords clears all captured flows.
 func ClearRecords() {
 	globalStore.clear()
@@ -560,34 +541,6 @@ func Changes(since int64, limit int) string {
 	}
 	last, records := globalStore.changesSince(since, limit, 128*1024)
 	encoded, _ := json.Marshal(map[string]any{"seq": last, "records": records})
-	return string(encoded)
-}
-
-// DumpRecords returns up to limit full records with bodies truncated to maxBody
-// bytes. The app calls it right before stopping the core so the history stays
-// readable after this process exits.
-func DumpRecords(limit, maxBody int) string {
-	if limit <= 0 || limit > 200 {
-		limit = 40
-	}
-	if maxBody <= 0 || maxBody > 1<<20 {
-		maxBody = 64 * 1024
-	}
-	summaries := globalStore.list()
-	if len(summaries) > limit {
-		summaries = summaries[:limit]
-	}
-	out := make([]recordDetail, 0, len(summaries))
-	for _, item := range summaries {
-		rec, ok := globalStore.get(item.ID)
-		if !ok {
-			continue
-		}
-		rec.RequestBody = truncateBody(rec.RequestBody, maxBody)
-		rec.ResponseBody = truncateBody(rec.ResponseBody, maxBody)
-		out = append(out, rec)
-	}
-	encoded, _ := json.Marshal(map[string]any{"records": out})
 	return string(encoded)
 }
 
@@ -608,18 +561,6 @@ func truncateBody(body bodyView, max int) bodyView {
 		body.Truncated = true
 	}
 	return body
-}
-
-// IsRunning reports whether the proxy engine is active.
-func IsRunning() bool {
-	stateMu.Lock()
-	defer stateMu.Unlock()
-	return activeState != nil
-}
-
-// Version returns the native core version.
-func Version() string {
-	return version
 }
 
 // ---------------- 域名过滤 ----------------

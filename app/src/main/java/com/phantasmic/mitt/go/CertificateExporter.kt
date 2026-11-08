@@ -1,10 +1,6 @@
 package com.phantasmic.mitt.go
 
-import android.content.ContentValues
 import android.content.Context
-import android.net.Uri
-import android.os.Environment
-import android.provider.MediaStore
 import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
 import java.security.cert.CertificateFactory
@@ -160,22 +156,25 @@ echo "[3/3] 注意：这种方式重启后会失效，长期使用请改用 Kern
         displayName: String,
         mime: String,
         bytes: ByteArray,
-    ): Uri {
-        val resolver = context.contentResolver
-        val values = ContentValues().apply {
-            put(MediaStore.Downloads.DISPLAY_NAME, displayName)
-            put(MediaStore.Downloads.MIME_TYPE, mime)
-            put(MediaStore.Downloads.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/$SUBDIR")
-            put(MediaStore.Downloads.IS_PENDING, 1)
-        }
-        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-            ?: error("无法创建下载文件")
-        resolver.openOutputStream(uri)?.use { it.write(bytes) } ?: error("无法写入下载文件")
-        values.clear()
-        values.put(MediaStore.Downloads.IS_PENDING, 0)
-        resolver.update(uri, values, null, null)
-        return uri
-    }
+    ): String = DownloadStore.save(
+        context = context,
+        name = displayName,
+        mime = mime,
+        bytes = bytes,
+        pending = true,
+    ) ?: error("无法创建下载文件")
+
+    /** 内置 CA 的 SHA-256（小写十六进制、不带冒号），用于 KernelSU 模块。 */
+    fun certSha256(context: Context): String = certDerSha256(readAsset(context, "ca/ca.crt"))
+
+    /** 证书页展示用的指纹：大写十六进制、冒号分隔。 */
+    fun fingerprint(context: Context): String = runCatching {
+        val cert = CertificateFactory.getInstance("X.509")
+            .generateCertificate(readAsset(context, "ca/ca.crt").byteInputStream()) as X509Certificate
+        MessageDigest.getInstance("SHA-256")
+            .digest(cert.encoded)
+            .joinToString(":") { "%02X".format(it) }
+    }.getOrDefault("-")
 
     private fun readAsset(context: Context, path: String): String =
         context.assets.open(path).bufferedReader(Charsets.UTF_8).use { it.readText() }

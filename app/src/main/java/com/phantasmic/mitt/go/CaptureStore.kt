@@ -1,15 +1,16 @@
 package com.phantasmic.mitt.go
 
 import android.content.Context
-import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import java.io.File
 
@@ -26,10 +27,10 @@ data class CaptureSession(
  * 记录、内存上限、会话与历史全部由这里管理。
  */
 object CaptureStore {
-    private const val TAG = "MittGoStore"
     private const val CURRENT = "capture-current.jsonl"
     private const val SESSION_PREFIX = "session-"
     private const val HEADER_BYTES = 240L
+    private const val LEGACY_HISTORY = "capture-history.json"
 
     private val lock = Any()
     private val records = LinkedHashMap<String, CaptureDetail>()
@@ -50,6 +51,9 @@ object CaptureStore {
     private var autoSaveDays: Int = 0
 
     private var pollJob: Job? = null
+
+    /** 开始抓包时立刻叫醒轮询，空闲时就不用每 300ms 空转一次。 */
+    private val pollWake = Channel<Unit>(Channel.CONFLATED)
 
     /** 已经点进详情看过的记录 id：列表里会做“已读”变暗。 */
     private val _visited = MutableStateFlow<Set<String>>(emptySet())
@@ -82,6 +86,9 @@ object CaptureStore {
                 }
             }
         }
+        // 旧版本把最近 40 条记录 dump 到 capture-history.json，但那份数据从来没有
+        // 被读取过；这里顺手删掉，别让它一直占着 files/。
+        runCatching { file(LEGACY_HISTORY)?.delete() }
         runCatching { refreshSessions() }
         runCatching {
             val prefs = ctx?.getSharedPreferences("mitt_go_visited", Context.MODE_PRIVATE)
@@ -119,6 +126,7 @@ object CaptureStore {
             }
         }
         publish(force = true)
+        pollWake.trySend(Unit)
     }
 
     /**
@@ -150,7 +158,7 @@ object CaptureStore {
                 lines.forEach { line ->
                     if (line.isBlank()) return@forEach
                     val detail = runCatching {
-                        ProxyCore.parseDetailJson(JSONObject(line))
+                        CaptureCodec.parseDetailJson(JSONObject(line))
                     }.getOrNull() ?: return@forEach
                     loaded[detail.id] = detail
                 }
@@ -196,7 +204,7 @@ object CaptureStore {
         publish(force = true)
         _visited.value = emptySet()
         runCatching { visitedPrefs?.edit()?.remove("ids")?.apply() }
-        runCatching { ProxyCore.clearRecords() }
+        runCatching { ProxyCore.clearEngineRecords() }
     }
 
     /** 增量轮询：运行中每 300ms 拉一次，落盘节流到 2s。 */
@@ -205,7 +213,8 @@ object CaptureStore {
         pollJob = scope.launch(Dispatchers.IO) {
             var lastFlush = 0L
             while (isActive) {
-                if (ProxyCore.isRunning()) {
+                val running = ProxyCore.isRunning()
+                if (running) {
                     runCatching { ProxyCore.events(lastSeq, 30) }.onSuccess { (seq, list) ->
                         if (seq != lastSeq) lastSeq = seq
                         if (list.isNotEmpty()) ingest(list)
@@ -218,7 +227,13 @@ object CaptureStore {
                     lastFlush = now
                     runCatching { flushPending() }
                 }
-                delay(300)
+                if (running) {
+                    delay(300)
+                } else {
+                    // 没在抓包时没有可拉的数据，把间隔放宽到 1 秒少吵醒 CPU；
+                    // beginSession() 会立刻唤醒，不会出现“点了开始要等一下才出记录”。
+                    withTimeoutOrNull(1000L) { pollWake.receive() }
+                }
             }
         }
     }
@@ -298,29 +313,6 @@ object CaptureStore {
         _records.value = snapshot
     }
 
-    private fun CaptureDetail.toSummary(): CaptureSummary {
-        val host = url.substringAfter("://", url).substringBefore('/')
-        val contentType = responseHeaders
-            .firstOrNull { it.name.equals("Content-Type", ignoreCase = true) }
-            ?.value
-            .orEmpty()
-        return CaptureSummary(
-            id = id,
-            uid = uid,
-            packageName = packageName,
-            startedAt = startedAt,
-            durationMs = durationMs,
-            method = method,
-            proto = proto,
-            url = url,
-            host = host,
-            statusCode = statusCode,
-            contentType = contentType,
-            size = responseBody.size,
-            error = error,
-        )
-    }
-
     private fun sizeOf(detail: CaptureDetail): Long = HEADER_BYTES +
         detail.requestBody.data.length +
         detail.responseBody.data.length +
@@ -328,31 +320,6 @@ object CaptureStore {
         detail.responseHeaders.sumOf { it.name.length + it.value.length }
 
     private fun file(name: String): File? = ctx?.let { File(it.filesDir, name) }
-
-    private fun loadCurrent() {
-        val current = file(CURRENT) ?: return
-        if (!current.exists()) return
-        synchronized(lock) {
-            records.clear()
-            pending.clear()
-            bytes = 0
-            current.bufferedReader(Charsets.UTF_8).useLines { lines ->
-                lines.forEach { line ->
-                    if (line.isBlank()) return@forEach
-                    val detail = runCatching {
-                        ProxyCore.parseDetailJson(JSONObject(line))
-                    }.getOrNull() ?: return@forEach
-                    val old = records.put(detail.id, detail)
-                    if (old != null) bytes -= sizeOf(old)
-                    bytes += sizeOf(detail)
-                    if (startedAt == 0L || detail.startedAt < startedAt) startedAt = detail.startedAt
-                }
-            }
-            pruneLocked()
-        }
-        publish(force = true)
-        Log.i(TAG, "restored ${records.size} records from $CURRENT")
-    }
 
     private fun flushPending() {
         if (pending.isEmpty()) return
@@ -366,7 +333,7 @@ object CaptureStore {
         runCatching {
             current.appendText(
                 buildString {
-                    batch.forEach { append(ProxyCore.detailToJson(it).toString()).append('\n') }
+                    batch.forEach { append(CaptureCodec.detailToJson(it).toString()).append('\n') }
                 },
                 Charsets.UTF_8,
             )

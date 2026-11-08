@@ -1,6 +1,5 @@
 package com.phantasmic.mitt.go.vpn
 
-import android.os.Build
 import android.util.Log
 import com.phantasmic.mitt.go.vpn.socket.CloseableConnection
 import com.phantasmic.mitt.go.vpn.socket.Constant
@@ -30,14 +29,6 @@ class ConnectionManager private constructor() : CloseableConnection {
     // 网络切换时由回调线程更新、NIO/handler 线程读取，需保证跨线程可见性。见 issue #864。
     @Volatile
     var proxyAddress: InetSocketAddress? = null
-    var proxyPassDomains: ArrayList<String>? = null
-
-    private val DEFAULT_PORTS: List<Int> = listOf(
-        80,  // HTTP
-        443,  // HTTPS
-        8080,  // Common local dev ports
-        8000, 8080, 8888, 9000 // Common local dev ports
-    )
 
     override fun closeConnection(connection: Connection) {
         closeConnection(
@@ -100,25 +91,6 @@ class ConnectionManager private constructor() : CloseableConnection {
         protect(channel.socket())
 
         connection.channel = channel
-
-        var socketAddress: SocketAddress? = null
-//        if (DEFAULT_PORTS.contains(port)) {
-//            socketAddress = proxyAddress
-//        }
-
-        connection.isInitConnect = socketAddress != null
-
-        if (socketAddress != null) {
-            val connected = channel.connect(socketAddress)
-            connection.isConnected = connected
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                //获取进程信息
-                Log.d(
-                    TAG,
-                    "Initiate connecting  " + channel.localAddress + " to remote tcp server: " + channel.remoteAddress
-                )
-            }
-        }
 
         table[key] = connection
         return connection

@@ -44,19 +44,6 @@ func MittGoStop() {
 	_ = mittgo.Stop()
 }
 
-//export MittGoSnapshot
-func MittGoSnapshot() *C.char {
-	return C.CString(mittgo.Snapshot())
-}
-
-//export MittGoRecord
-func MittGoRecord(id *C.char) *C.char {
-	if id == nil {
-		return C.CString("")
-	}
-	return C.CString(mittgo.GetRecord(C.GoString(id)))
-}
-
 //export MittGoEvents
 func MittGoEvents(since C.longlong, limit C.int) *C.char {
 	return C.CString(mittgo.Changes(int64(since), int(limit)))
@@ -65,11 +52,6 @@ func MittGoEvents(since C.longlong, limit C.int) *C.char {
 //export MittGoClear
 func MittGoClear() {
 	mittgo.ClearRecords()
-}
-
-//export MittGoDump
-func MittGoDump(limit C.int, maxBody C.int) *C.char {
-	return C.CString(mittgo.DumpRecords(int(limit), int(maxBody)))
 }
 
 //export MittGoSetSocks
@@ -94,6 +76,17 @@ func MittGoSetDomainFilter(configJSON *C.char) *C.char {
 		return C.CString("decode domain filter: " + err.Error())
 	}
 	mittgo.SetDomainFilter(cfg.Mode, cfg.White, cfg.Black)
+	return C.CString("")
+}
+
+//export MittGoSetUpstream
+func MittGoSetUpstream(configJSON *C.char) *C.char {
+	if configJSON == nil {
+		return C.CString("config is required")
+	}
+	if err := mittgo.SetUpstream(C.GoString(configJSON)); err != nil {
+		return C.CString(err.Error())
+	}
 	return C.CString("")
 }
 

@@ -113,10 +113,14 @@ class Connection(
         if (existing.isNotEmpty()) sendingStream.write(existing)
     }
 
+    /**
+     * 直接把读缓冲里的一段写进接收缓冲，省掉一次 ByteArray 分配和拷贝。
+     * 调用方是单线程的 selector，[data] 在返回前不会被改写。
+     */
     @Synchronized
-    fun addReceivedData(data: ByteArray?) {
+    fun addReceivedData(data: ByteArray, offset: Int, length: Int) {
         try {
-            receivingStream.write(data)
+            receivingStream.write(data, offset, length)
         } catch (e: IOException) {
             Log.e(TAG, e.toString())
         }

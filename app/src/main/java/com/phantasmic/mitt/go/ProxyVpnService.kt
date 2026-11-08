@@ -45,10 +45,6 @@ class ProxyVpnService : VpnService(), ProtectSocket {
         const val MAX_PACKET_LEN = 1500
         const val VIRTUAL_HOST = "10.0.0.2"
 
-        @Volatile
-        var isRunning: Boolean = false
-            private set
-
         fun startIntent(
             context: Context,
             proxyMode: ProxyMode,
@@ -92,7 +88,7 @@ class ProxyVpnService : VpnService(), ProtectSocket {
             return START_NOT_STICKY
         }
         if (intent == null) {
-            if (!isRunning) stopSelf()
+            if (!ProxyRuntime.status.value.running) stopSelf()
             return START_STICKY
         }
 
@@ -106,7 +102,7 @@ class ProxyVpnService : VpnService(), ProtectSocket {
             startForegroundCompat(buildNotification())
         }
 
-        if (isRunning || starting) return START_STICKY
+        if (ProxyRuntime.status.value.running || starting) return START_STICKY
         starting = true
         stopRequested = false
         val httpPort = intent.getIntExtra(EXTRA_HTTP_PORT, 9099)
@@ -124,6 +120,7 @@ class ProxyVpnService : VpnService(), ProtectSocket {
                     tunnelPort = tunnelPort,
                     socksPort = socksPort,
                     socksEnabled = socksEnabled,
+                    upstream = filterSettings.upstream,
                     domainMode = filterSettings.domainFilterMode,
                     domainWhite = filterSettings.domainWhitelist,
                     domainBlack = filterSettings.domainBlacklist,
@@ -131,6 +128,13 @@ class ProxyVpnService : VpnService(), ProtectSocket {
                 )
                 // 旁路上传：内核起来后再下发规则，没开就下发一份空配置清掉旧的。
                 AsyncUploadRuntime.sync()
+                if (filterSettings.upstream.enabled) {
+                    MittLog.info(
+                        "proxy",
+                        "上游代理生效：${filterSettings.upstream.address}" +
+                            if (filterSettings.upstream.username.isNotBlank()) "（带认证）" else "",
+                    )
+                }
                 if (filterSettings.certMode == CertMode.INDIA) {
                     MittLog.info("cert", "证书模式：印度证书（免 root），使用 eMudhra 交叉签名中间证书签发")
                 }
@@ -163,16 +167,14 @@ class ProxyVpnService : VpnService(), ProtectSocket {
                         vpnInterface = fd,
                         proxyHost = "127.0.0.1",
                         proxyPort = tunnelPort,
-                        proxyPassDomains = null,
                     )
                     vpnThread = packetThread
                     packetThread.start()
                     registerNetworkCallback()
                 }
-                isRunning = true
+                ProxyRuntime.markRunning()
                 starting = false
                 CaptureStore.beginSession()
-                ProxyRuntime.markRunning()
                 if (proxyMode == ProxyMode.PROXY_ONLY) {
                     MittLog.info("mitm", "仅代理模式开始监听 127.0.0.1:$httpPort")
                 } else {
@@ -184,7 +186,6 @@ class ProxyVpnService : VpnService(), ProtectSocket {
                 Log.i(TAG, "Go MITM started: mode=$proxyMode http=$httpPort tunnel=$tunnelPort socks=$socksPort")
             } catch (t: Throwable) {
                 Log.e(TAG, "start failed", t)
-                isRunning = false
                 starting = false
                 MittLog.error("mitm", "启动失败：${t.message ?: t.javaClass.simpleName}")
                 ProxyRuntime.markError(t.message ?: t.javaClass.simpleName)
@@ -277,9 +278,10 @@ class ProxyVpnService : VpnService(), ProtectSocket {
     }
 
     private fun disconnect() {
-        val wasRunning = isRunning
+        val wasRunning = ProxyRuntime.status.value.running
         if (wasRunning) MittLog.info("mitm", "停止抓包")
-        isRunning = false
+        // starting 也要清掉：启动过程中被停止时，UI 不能一直停在“启动中”。
+        if (wasRunning || ProxyRuntime.status.value.starting) ProxyRuntime.markStopped()
         starting = false
         stopRequested = true
         runCatching { networkCallback?.let { connectivityManager?.unregisterNetworkCallback(it) } }
@@ -294,10 +296,8 @@ class ProxyVpnService : VpnService(), ProtectSocket {
                 // 先把剩余变更拉回 Kotlin，再按策略落盘/归档，最后关内核
                 runCatching { CaptureStore.flushFromCore() }
                 runCatching { CaptureStore.endSession() }
-                runCatching { ProxyCore.dumpHistoryForExit() }
                 runCatching { ProxyCore.stop() }
             }
-            ProxyRuntime.markStopped()
         }
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()

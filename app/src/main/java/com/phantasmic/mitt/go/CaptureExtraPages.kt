@@ -1,6 +1,5 @@
 package com.phantasmic.mitt.go
 
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -20,10 +19,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.material3.Button
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -35,23 +30,26 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.phantasmic.mitt.go.ui.GlassCard
+import com.phantasmic.mitt.go.ui.GlassLevel
+import com.phantasmic.mitt.go.ui.MittModal
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import top.yukonga.miuix.kmp.basic.Button
+import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
-import top.yukonga.miuix.kmp.blur.Backdrop
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.Switch
+import top.yukonga.miuix.kmp.basic.SwitchDefaults
 import top.yukonga.miuix.kmp.basic.TextField
+import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -233,7 +231,6 @@ fun HistoryPage(
                     onSelectedIndexChange = { index ->
                         val days = indexToDays[index] ?: 0
                         onSettingsChange(settings.copy(autoSaveDays = days))
-                        CaptureStore.setAutoSaveDays(days)
                     },
                 )
             }
@@ -301,7 +298,7 @@ private fun SessionRow(
         )
         Spacer(Modifier.width(10.dp))
         Text(
-            text = formatBytes(bytes.toInt().coerceAtLeast(0)),
+            text = formatSize(bytes.toInt().coerceAtLeast(0)),
             fontSize = 11.sp,
             fontFamily = FontFamily.Monospace,
             color = colors.onSurfaceSecondary,
@@ -311,41 +308,29 @@ private fun SessionRow(
     }
 }
 
-/** 关键词高亮小窗：总开关 + 颜色/正则规则，玻璃卡片 + 进出动画。 */
+/**
+ * 关键词高亮小窗：总开关 + 颜色/正则规则。
+ *
+ * 浮层（遮罩、进出场、返回键关闭）统一交给 [MittModal]，玻璃统一走 [GlassCard]。
+ */
 @Composable
 fun HighlightDialog(
+    visible: Boolean,
     settings: MittSettings,
     onSettingsChange: (MittSettings) -> Unit,
-    backdrop: Backdrop?,
     onDismiss: () -> Unit,
 ) {
     val colors = MiuixTheme.colorScheme
     var pattern by remember { mutableStateOf("") }
     var colorIndex by remember { mutableIntStateOf(0) }
-    val shape = RoundedCornerShape(22.dp)
 
-    Box(
-        Modifier
-            .fillMaxSize()
-            .background(Color(0x33000000))
-            .clickable(onClick = onDismiss),
-        contentAlignment = Alignment.Center,
-    ) {
-        Column(
-            Modifier
+    MittModal(visible = visible, onDismiss = onDismiss) {
+        GlassCard(
+            modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 26.dp)
-                .clip(shape)
-                .glassSurface(
-                    backdrop = backdrop,
-                    shape = shape,
-                    container = colors.surfaceContainer.copy(
-                        alpha = if (backdrop == null) 0.98f else 0.72f,
-                    ),
-                )
-                .border(0.8.dp, colors.outline.copy(alpha = 0.3f), shape)
-                .clickable(enabled = false) {}
-                .padding(horizontal = 20.dp, vertical = 18.dp),
+                .padding(horizontal = 26.dp),
+            shape = RoundedCornerShape(22.dp),
+            level = GlassLevel.Dialog,
         ) {
             Text(
                 text = "关键词高亮",
@@ -366,7 +351,7 @@ fun HighlightDialog(
                     onCheckedChange = { enabled ->
                         onSettingsChange(settings.copy(highlightEnabled = enabled))
                     },
-                    colors = SwitchDefaults.colors(checkedTrackColor = colors.primary),
+                    colors = SwitchDefaults.switchColors(checkedTrackColor = colors.primary),
                 )
             }
             Spacer(Modifier.height(6.dp))
@@ -450,14 +435,12 @@ fun HighlightDialog(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Spacer(Modifier.weight(1f))
-                DialogPill("取消", primary = false, onClick = onDismiss)
-                DialogPill(
-                    "添加",
-                    primary = true,
+                TextButton("取消", onClick = onDismiss)
+                Button(
                     onClick = {
                         val text = pattern.trim()
-                        if (text.isEmpty()) return@DialogPill
-                        val regex = runCatching { Regex(text) }.getOrNull() ?: return@DialogPill
+                        if (text.isEmpty()) return@Button
+                        val regex = runCatching { Regex(text) }.getOrNull() ?: return@Button
                         val rules = settings.highlightRules + HighlightRule(
                             colorArgb = highlightPalette[colorIndex],
                             pattern = regex.pattern,
@@ -465,107 +448,13 @@ fun HighlightDialog(
                         onSettingsChange(settings.copy(highlightRules = rules))
                         pattern = ""
                     },
-                )
+                    colors = ButtonDefaults.buttonColorsPrimary(),
+                ) {
+                    Text("添加")
+                }
             }
         }
-    }
-}
-
-@Composable
-private fun DialogPill(label: String, primary: Boolean, onClick: () -> Unit) {
-    val colors = MiuixTheme.colorScheme
-    val shape = RoundedCornerShape(50)
-    Box(
-        Modifier
-            .height(40.dp)
-            .clip(shape)
-            .background(if (primary) Color(0xFF3B7DD8) else colors.surfaceContainer)
-            .border(
-                0.8.dp,
-                if (primary) Color.Transparent else colors.outline.copy(alpha = 0.35f),
-                shape,
-            )
-            .clickable(onClick = onClick)
-            .padding(horizontal = 22.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            text = label,
-            fontSize = 14.sp,
-            fontWeight = FontWeight.Medium,
-            color = if (primary) Color.White else colors.onSurface,
-        )
-    }
-}
-
-@Composable
-private fun TrashGlyph(color: Color, onClick: () -> Unit) {
-    Canvas(
-        Modifier
-            .size(20.dp)
-            .clip(RoundedCornerShape(6.dp))
-            .clickable(onClick = onClick)
-            .padding(1.dp),
-    ) {
-        val w = size.width
-        val h = size.height
-        val stroke = 1.6.dp.toPx()
-        drawLine(color, Offset(w * 0.16f, h * 0.28f), Offset(w * 0.84f, h * 0.28f), stroke)
-        drawLine(color, Offset(w * 0.38f, h * 0.28f), Offset(w * 0.38f, h * 0.15f), stroke)
-        drawLine(color, Offset(w * 0.62f, h * 0.28f), Offset(w * 0.62f, h * 0.15f), stroke)
-        drawLine(color, Offset(w * 0.38f, h * 0.15f), Offset(w * 0.62f, h * 0.15f), stroke)
-        drawLine(color, Offset(w * 0.26f, h * 0.28f), Offset(w * 0.32f, h * 0.88f), stroke)
-        drawLine(color, Offset(w * 0.74f, h * 0.28f), Offset(w * 0.68f, h * 0.88f), stroke)
-        drawLine(color, Offset(w * 0.32f, h * 0.88f), Offset(w * 0.68f, h * 0.88f), stroke)
-        drawLine(color, Offset(w * 0.45f, h * 0.40f), Offset(w * 0.46f, h * 0.76f), stroke)
-        drawLine(color, Offset(w * 0.55f, h * 0.40f), Offset(w * 0.54f, h * 0.76f), stroke)
     }
 }
 
 /** 抓包页菜单的小图标。 */
-@Composable
-fun MenuGlyph(kind: Int, color: Color, size: Dp = 18.dp) {
-    Canvas(Modifier.size(size)) {
-        val w = this.size.width
-        val h = this.size.height
-        val stroke = 1.6.dp.toPx()
-        when (kind) {
-            0 -> {
-                drawCircle(color, w * 0.30f, Offset(w * 0.42f, h * 0.42f), style = Stroke(stroke))
-                drawLine(color, Offset(w * 0.64f, h * 0.64f), Offset(w * 0.92f, h * 0.92f), stroke)
-            }
-
-            1 -> {
-                drawRoundRect(
-                    color = color,
-                    topLeft = Offset(w * 0.22f, h * 0.30f),
-                    size = androidx.compose.ui.geometry.Size(w * 0.56f, h * 0.56f),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(2.dp.toPx()),
-                    style = Stroke(stroke),
-                )
-                drawLine(color, Offset(w * 0.36f, h * 0.12f), Offset(w * 0.36f, h * 0.30f), stroke)
-                drawLine(color, Offset(w * 0.64f, h * 0.86f), Offset(w * 0.64f, h * 0.96f), stroke)
-            }
-
-            2 -> {
-                drawLine(color, Offset(w * 0.10f, h * 0.30f), Offset(w * 0.90f, h * 0.30f), stroke)
-                drawLine(color, Offset(w * 0.10f, h * 0.70f), Offset(w * 0.90f, h * 0.70f), stroke)
-                drawCircle(color, w * 0.10f, Offset(w * 0.36f, h * 0.30f))
-                drawCircle(color, w * 0.10f, Offset(w * 0.64f, h * 0.70f))
-            }
-
-            3 -> {
-                drawCircle(color, w * 0.26f, Offset(w * 0.5f, h * 0.40f), style = Stroke(stroke))
-                drawLine(color, Offset(w * 0.44f, h * 0.62f), Offset(w * 0.38f, h * 0.92f), stroke)
-                drawLine(color, Offset(w * 0.56f, h * 0.62f), Offset(w * 0.62f, h * 0.92f), stroke)
-                drawLine(color, Offset(w * 0.30f, h * 0.30f), Offset(w * 0.70f, h * 0.30f), stroke)
-            }
-
-            else -> {
-                drawCircle(color, w * 0.34f, Offset(w * 0.5f, h * 0.5f), style = Stroke(stroke))
-                drawLine(color, Offset(w * 0.5f, h * 0.16f), Offset(w * 0.5f, h * 0.30f), stroke)
-                drawLine(color, Offset(w * 0.5f, h * 0.70f), Offset(w * 0.5f, h * 0.84f), stroke)
-            }
-        }
-    }
-}

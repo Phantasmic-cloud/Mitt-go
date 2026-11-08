@@ -148,13 +148,14 @@ private class BgEffectNode(
         animationJob?.cancel()
         startOffset = animTime
         animationJob = coroutineScope.launch {
-            val minDeltaNanos = 1_000_000_000L / 60L
+            // 整屏 AGSL 背景是慢速流动的装饰层：30fps 肉眼没区别，重绘次数减半。
+            // 用 withFrameNanos 而不是 delay——App 退到后台时帧时钟会暂停，不会偷偷跑。
             val origin = withFrameNanos { it }
-            var lastEmit = origin
+            var last = origin
             while (isActive) {
                 val now = withFrameNanos { it }
-                if (now - lastEmit < minDeltaNanos) continue
-                lastEmit = now
+                if (now - last < 33_000_000L) continue
+                last = now
                 animTime = startOffset + (now - origin) / 1_000_000_000f
                 invalidateDraw()
             }

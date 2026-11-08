@@ -162,15 +162,22 @@ func (a *recorderAddon) HTTPConnectError(f *proxy.Flow, err error) {
 	})
 }
 
-// flowHost 返回解密后请求的真实域名。
-// 内层请求是 origin-form（GET /path），域名只在 Host 头里，
-// 所以优先用 raw.Host，拿不到再退回 URL。
-func flowHost(f *proxy.Flow) string {
+// rawHost 返回请求行里的 Host（可能带端口）。
+// 内层请求是 origin-form（GET /path），域名只在这个头里。
+func rawHost(f *proxy.Flow) string {
 	if f == nil || f.Request == nil {
 		return ""
 	}
 	if raw := f.Request.Raw(); raw != nil && raw.Host != "" {
-		host := raw.Host
+		return raw.Host
+	}
+	return ""
+}
+
+// flowHost 返回解密后请求的真实域名（去掉端口）。
+// 优先用 Host 头，拿不到再退回 URL。
+func flowHost(f *proxy.Flow) string {
+	if host := rawHost(f); host != "" {
 		if idx := strings.LastIndex(host, ":"); idx > 0 {
 			host = host[:idx]
 		}
@@ -178,7 +185,7 @@ func flowHost(f *proxy.Flow) string {
 			return host
 		}
 	}
-	if f.Request.URL != nil {
+	if f != nil && f.Request != nil && f.Request.URL != nil {
 		if host := f.Request.URL.Hostname(); host != "" {
 			return host
 		}

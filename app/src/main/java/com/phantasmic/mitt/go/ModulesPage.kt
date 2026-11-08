@@ -1,6 +1,5 @@
 package com.phantasmic.mitt.go
 
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -11,9 +10,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -54,16 +50,3 @@ fun ModulesPage(
 }
 
 /** 模块列表用的拼图图标。 */
-@Composable
-private fun ModuleGlyph() {
-    val color = MiuixTheme.colorScheme.onSurfaceSecondary
-    Canvas(Modifier.size(22.dp)) {
-        val gap = 2.5.dp.toPx()
-        val cell = (size.width - gap) / 2f
-        val radius = CornerRadius(3.5.dp.toPx())
-        drawRoundRect(color, Offset.Zero, Size(cell, cell), radius)
-        drawRoundRect(color, Offset(cell + gap, 0f), Size(cell, cell), radius)
-        drawRoundRect(color, Offset(0f, cell + gap), Size(cell, cell), radius)
-        drawRoundRect(color, Offset(cell + gap, cell + gap), Size(cell, cell), radius)
-    }
-}
