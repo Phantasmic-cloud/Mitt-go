@@ -1,7 +1,11 @@
 package com.phantasmic.mitt.go
 
+import android.Manifest
 import android.app.Activity
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.VpnService
+import android.os.Build
 import android.os.Bundle
 import android.view.animation.DecelerateInterpolator
 import androidx.activity.ComponentActivity
@@ -21,8 +25,23 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.ThemeController
 
 class MainActivity : ComponentActivity() {
+    companion object {
+        /** 控制中心磁贴点了「开启」但需要走 App 流程时带上的 extra。 */
+        const val EXTRA_START_CAPTURE = "com.phantasmic.mitt.go.EXTRA_START_CAPTURE"
+    }
+
     private var currentSettings = MittSettings()
     private var pendingStart = false
+    private var pendingStartByPermission = false
+
+    /** 抓包通知要 POST_NOTIFICATIONS；拒绝也照样抓包，只是通知中心看不到状态。 */
+    private val notificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+            if (pendingStartByPermission) {
+                pendingStartByPermission = false
+                continueStart()
+            }
+        }
 
     private val vpnPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -67,10 +86,16 @@ class MainActivity : ComponentActivity() {
             currentSettings.autoStartOnLaunch &&
             !ProxyRuntime.status.value.running
         ) {
+            // 自动启动不问通知权限：弹窗留给用户手动点「开始抓包」的时候。
             window.decorView.postDelayed(
-                { runCatching { startProxy() } },
+                { runCatching { continueStart() } },
                 700,
             )
+        }
+
+        // 控制中心磁贴的「开启」走到了 App：这里等页面画出来再启动，避免和启动画面抢。
+        if (intent?.getBooleanExtra(EXTRA_START_CAPTURE, false) == true) {
+            window.decorView.post { runCatching { startProxy() } }
         }
 
         setContent {
@@ -105,8 +130,36 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.getBooleanExtra(EXTRA_START_CAPTURE, false)) {
+            window.decorView.post { runCatching { startProxy() } }
+        }
+    }
+
     private fun startProxy() {
-        if (ProxyRuntime.status.value.running) return
+        if (ProxyRuntime.status.value.running || ProxyRuntime.status.value.starting) return
+        if (needsNotificationPermission()) {
+            pendingStartByPermission = true
+            runCatching {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }.onFailure {
+                pendingStartByPermission = false
+                continueStart()
+            }
+            return
+        }
+        continueStart()
+    }
+
+    private fun needsNotificationPermission(): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+
+    private fun continueStart() {
+        if (ProxyRuntime.status.value.running || ProxyRuntime.status.value.starting) return
         if (currentSettings.proxyMode == ProxyMode.PROXY_ONLY) {
             launchVpnService()
             return
@@ -135,9 +188,8 @@ class MainActivity : ComponentActivity() {
             socksEnabled = currentSettings.socksEnabled,
         )
         try {
-            // VpnService owns the system VPN notification. Starting it as an
-            // ordinary service matches the tested Mitt path and avoids the
-            // Android 14+ strict foreground-service-type checks.
+            // 前台通知由服务自己在 onStartCommand 里挂；从 App（前台）启动普通
+            // startService 就够，不用 startForegroundService。
             startService(intent)
         } catch (t: Throwable) {
             ProxyRuntime.markError(t.message ?: "启动 VPN 服务失败")

@@ -101,6 +101,8 @@ func (a *recorderAddon) Request(f *proxy.Flow) {
 		RequestHeader: copyHeader(f.Request.Header),
 		RequestBody:   makeBodyView(f.Request.Body, a.store.maxBody),
 	})
+	// 能走到这里说明请求头已经从客户端解密出来了：记一次解密成功。
+	mitmOK.Add(1)
 }
 
 // remoteAddr 是真正连出去的目标地址（IP:port），不是 URL 里的域名。
@@ -149,6 +151,7 @@ func (a *recorderAddon) RequestError(f *proxy.Flow, err error) {
 		rec.Error = err.Error()
 		rec.DurationMs = time.Since(f.StartTime).Milliseconds()
 	})
+	mitmFail.Add(1)
 }
 
 func (a *recorderAddon) HTTPConnectError(f *proxy.Flow, err error) {
@@ -160,6 +163,8 @@ func (a *recorderAddon) HTTPConnectError(f *proxy.Flow, err error) {
 		rec.Error = err.Error()
 		rec.DurationMs = time.Since(f.StartTime).Milliseconds()
 	})
+	// CONNECT 隧道本身失败（多半是客户端不认证书 / 对端拒绝），也算一次失败。
+	mitmFail.Add(1)
 }
 
 // rawHost 返回请求行里的 Host（可能带端口）。

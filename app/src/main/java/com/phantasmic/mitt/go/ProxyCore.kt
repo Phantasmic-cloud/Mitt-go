@@ -17,6 +17,14 @@ import org.json.JSONObject
  * [CaptureStore] 持有，数据模型在 [CaptureModel]，JSON 编解码在 [CaptureCodec]。
  * 不要在页面里直接调 JNI。
  */
+/** 内核的累计统计（抓包通知用）：字节数 + MITM 解密成功/失败条数。 */
+data class TrafficStats(
+    val up: Long = 0,
+    val down: Long = 0,
+    val ok: Long = 0,
+    val fail: Long = 0,
+)
+
 object ProxyCore {
     private const val TAG = "MittGoCore"
 
@@ -132,7 +140,7 @@ object ProxyCore {
             .getOrDefault("JNI call failed")
         if (error.isNotEmpty()) {
             Log.w(TAG, "setAsyncUpload: $error")
-            MittLog.warn("async", "旁路上传配置下发失败：$error")
+            MittLog.warn("async", "旁路上传配置下发失败：$error", MittLog.GROUP_MODULE)
         }
     }
 
@@ -155,9 +163,28 @@ object ProxyCore {
                 title = item.optString("title"),
                 text = text,
                 time = item.optLong("time"),
+                name = item.optString("name"),
+                detail = item.optString("detail"),
+                notify = item.optBoolean("notify", false),
             )
         }
         return out
+    }
+
+    /**
+     * 内核累计统计：上下行字节数 + 进 MITM 的流量里解密成功 / 失败的条数。
+     * 内核没起就全是 0；抓包通知每秒问一次，字节数自己取差值算速率。
+     */
+    fun traffic(): TrafficStats {
+        if (!running || !GoCoreJni.load()) return TrafficStats()
+        val body = runCatching { GoCoreJni.traffic() }.getOrNull() ?: return TrafficStats()
+        val json = runCatching { JSONObject(body) }.getOrNull() ?: return TrafficStats()
+        return TrafficStats(
+            up = json.optLong("up"),
+            down = json.optLong("down"),
+            ok = json.optLong("ok"),
+            fail = json.optLong("fail"),
+        )
     }
 
     fun setSocksEnabled(enabled: Boolean) {

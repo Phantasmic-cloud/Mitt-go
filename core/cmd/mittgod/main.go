@@ -106,6 +106,11 @@ func MittGoAsyncEvents() *C.char {
 	return C.CString(mittgo.AsyncEvents())
 }
 
+//export MittGoTraffic
+func MittGoTraffic() *C.char {
+	return C.CString(mittgo.Traffic())
+}
+
 //export MittGoFree
 func MittGoFree(p *C.char) {
 	C.free(unsafe.Pointer(p))

@@ -89,6 +89,11 @@ fun LogPage(topInset: Dp, bottomInset: Dp) {
                 withStyle(SpanStyle(color = levelColor, fontWeight = FontWeight.Medium)) {
                     append("[${entry.level.label}] ")
                 }
+                entry.group?.takeIf { it.isNotBlank() }?.let { group ->
+                    withStyle(SpanStyle(color = colors.onSurfaceSecondary)) {
+                        append("[$group] ")
+                    }
+                }
                 withStyle(SpanStyle(color = colors.onSurfaceSecondary)) {
                     append("[${entry.tag}] ")
                 }

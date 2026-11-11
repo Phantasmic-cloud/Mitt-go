@@ -38,6 +38,10 @@ fun typeColor(contentType: String): Color =
  * - `compact = true` 给列表行用：`534kb` / `1.2mb`；
  * - `compact = false` 给详情页用：`534.0 KB` / `1.20 MB`。
  */
+/** 吞吐速率也用体积格式，只差一个 /s；这里只收 Long 防止调用方自己截断。 */
+fun formatSize(size: Long): String =
+    formatSize(size.coerceIn(0L, Int.MAX_VALUE.toLong()).toInt())
+
 fun formatSize(size: Int, compact: Boolean = false): String = if (compact) {
     when {
         size <= 0 -> "0kb"

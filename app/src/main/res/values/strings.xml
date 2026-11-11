@@ -2,6 +2,13 @@
 <resources>
     <string name="app_name">Mitt-go</string>
     <string name="vpn_channel_name">抓包服务</string>
-    <string name="vpn_active_notification_title">Mitt-go 正在抓包</string>
-    <string name="vpn_active_notification_content">流量经过本地 VPN 与 Go MITM 内核</string>
+    <!-- 抓包中的常驻通知 -->
+    <string name="vpn_notification_starting">正在启动…</string>
+    <string name="vpn_notification_line">"%1$s/s↑  %2$s/s↓  |  %3$d 成功  %4$d 失败"</string>
+    <string name="vpn_notification_proxy_only">"仅代理模式 · 127.0.0.1:%1$d  |  %2$d 成功  %3$d 失败"</string>
+    <string name="vpn_notification_stop">停止抓包</string>
+    <!-- 控制中心磁贴：图标固定西兰花，字样跟状态走 -->
+    <string name="tile_label_idle">Mitt-go</string>
+    <string name="tile_label_vpn">VPN</string>
+    <string name="tile_label_proxy">仅代理</string>
 </resources>

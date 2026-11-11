@@ -474,12 +474,9 @@ private fun OverlayLayer(
                                     }
                                 }
                                 if (entry is NavEntry.AsyncUpload) {
-                                    // 导入 = 取进来，箭头朝下；导出用的是 ExportGlyph。
+                                    // 顶栏只留导入（取进来，箭头朝下）；新建在页面右下角的蓝球上。
                                     IconButton(onClick = { asyncUi.importTick++ }) {
                                         ImportGlyph(color = colors.onSurface)
-                                    }
-                                    IconButton(onClick = { asyncUi.createTick++ }) {
-                                        PlusGlyph(color = colors.onSurface)
                                     }
                                 }
                             },

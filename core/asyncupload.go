@@ -52,8 +52,6 @@ type asyncYamlConfig struct {
 				Min int `yaml:"min"`
 				Max int `yaml:"max"`
 			} `yaml:"size_limit"`
-			// 超过 chunk_size 的 body 会自动切片上传；不写这段就是整块发。
-			ChunkUpload asyncChunkConfig `yaml:"chunk_upload"`
 		} `yaml:"file"`
 		Timeout    int `yaml:"timeout"`
 		MaxRetries int `yaml:"max_retries"`
@@ -74,7 +72,6 @@ type asyncRule struct {
 	rename      string
 	minSize     int
 	maxSize     int
-	chunkSize   int
 	timeout     time.Duration
 	maxRetries  int
 	notify      bool
@@ -95,12 +92,15 @@ func init() {
 // ---------------- 通知 / 日志队列 ----------------
 
 type asyncNotice struct {
-	Seq   int64  `json:"seq"`
-	Time  int64  `json:"time"`
-	Kind  string `json:"kind"`  // notify = 系统通知，log = 只写日志页
-	Level string `json:"level"` // info / warn / error
-	Title string `json:"title"`
-	Text  string `json:"text"`
+	Seq    int64  `json:"seq"`
+	Time   int64  `json:"time"`
+	Kind   string `json:"kind"`  // log = 只写日志页，result = 上传最终结果（日志页 + 可选系统通知）
+	Level  string `json:"level"` // info / warn / error
+	Title  string `json:"title"`
+	Text   string `json:"text"`
+	Name   string `json:"name,omitempty"`   // 配置名（result 拼日志行用）
+	Detail string `json:"detail,omitempty"` // 状态码 + 服务器返回的那句（和通知第二行一致）
+	Notify bool   `json:"notify,omitempty"` // result 要不要弹系统通知
 }
 
 var asyncQueue struct {
@@ -112,20 +112,37 @@ var asyncQueue struct {
 const asyncQueueLimit = 400
 
 func asyncPush(kind, level, title, text string) {
-	text = strings.TrimSpace(text)
-	if text == "" {
+	asyncEnqueue(asyncNotice{Kind: kind, Level: level, Title: title, Text: text})
+}
+
+// asyncPushResult 上传最终结果：日志行和系统通知都由 Android 侧从这条事件拼出来，
+// 这样「通知有没有发出去」能写进同一行日志。
+func asyncPushResult(level, name, detail, body string, notify bool) {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "mittgo: async: result %s\n", strings.ReplaceAll(body, "\n", " "))
+	asyncEnqueue(asyncNotice{
+		Kind:   "result",
+		Level:  level,
+		Title:  "Mitt-go",
+		Text:   body,
+		Name:   name,
+		Detail: strings.TrimSpace(detail),
+		Notify: notify,
+	})
+}
+
+func asyncEnqueue(item asyncNotice) {
+	item.Text = strings.TrimSpace(item.Text)
+	if item.Text == "" {
 		return
 	}
 	asyncQueue.mu.Lock()
 	asyncQueue.seq++
-	item := asyncNotice{
-		Seq:   asyncQueue.seq,
-		Time:  time.Now().UnixMilli(),
-		Kind:  kind,
-		Level: level,
-		Title: title,
-		Text:  text,
-	}
+	item.Seq = asyncQueue.seq
+	item.Time = time.Now().UnixMilli()
 	asyncQueue.items = append(asyncQueue.items, item)
 	if len(asyncQueue.items) > asyncQueueLimit {
 		asyncQueue.items = asyncQueue.items[len(asyncQueue.items)-asyncQueueLimit:]
@@ -140,7 +157,7 @@ func asyncLogf(format string, args ...any) {
 	asyncPush("log", "info", "", text)
 }
 
-func asyncErrorf(format string, args ...any) {
+func asyncWarnf(format string, args ...any) {
 	text := fmt.Sprintf(format, args...)
 	fmt.Fprintf(os.Stderr, "mittgo: async: %s\n", text)
 	asyncPush("log", "warn", "", text)
@@ -180,12 +197,12 @@ func SetAsyncUpload(payloadJSON string) string {
 		for index, raw := range payload.Configs {
 			var cfg asyncYamlConfig
 			if err := yaml.Unmarshal([]byte(raw), &cfg); err != nil {
-				asyncErrorf("第 %d 份配置解析失败：%v", index+1, err)
+				asyncWarnf("第 %d 份配置解析失败：%v", index+1, err)
 				continue
 			}
 			rule, err := compileAsyncRule(cfg)
 			if err != nil {
-				asyncErrorf("配置「%s」无效：%v", cfg.Name, err)
+				asyncWarnf("配置「%s」无效：%v", cfg.Name, err)
 				continue
 			}
 			set.rules = append(set.rules, rule)
@@ -193,29 +210,7 @@ func SetAsyncUpload(payloadJSON string) string {
 		}
 	}
 	asyncStore.Store(set)
-	asyncLogf("旁路上传总开关=%v，生效规则=%d", set.enabled, len(set.rules))
 	return ""
-}
-
-// asyncChunkConfig 对应 YAML 里的 upload.file.chunk_upload。
-type asyncChunkConfig struct {
-	Enable    bool `yaml:"enable"`
-	ChunkSize int  `yaml:"chunk_size"`
-}
-
-// asyncChunkSize 归一化分片配置：没开就是 0（整块发），开了默认 1 MiB，下限 64 KiB。
-func asyncChunkSize(cfg asyncChunkConfig) int {
-	if !cfg.Enable {
-		return 0
-	}
-	size := cfg.ChunkSize
-	if size <= 0 {
-		size = 1 << 20
-	}
-	if size < 64<<10 {
-		size = 64 << 10
-	}
-	return size
 }
 
 func compileAsyncRule(cfg asyncYamlConfig) (asyncRule, error) {
@@ -261,7 +256,6 @@ func compileAsyncRule(cfg asyncYamlConfig) (asyncRule, error) {
 		rename:      strings.TrimSpace(cfg.Upload.File.Rename),
 		minSize:     maxInt(cfg.Upload.File.SizeLimit.Min, 0),
 		maxSize:     maxInt(cfg.Upload.File.SizeLimit.Max, 0),
-		chunkSize:   asyncChunkSize(cfg.Upload.File.ChunkUpload),
 		timeout:     time.Duration(timeout) * time.Second,
 		maxRetries:  maxInt(cfg.Upload.MaxRetries, 0),
 		notify:      cfg.Notify.Enabled,
@@ -399,15 +393,12 @@ func asyncHandleFlow(f *proxy.Flow) {
 				payload = f.Response.Body
 			}
 			if !rule.sizeAllowed(len(payload)) {
-				asyncLogf(
-					"命中「%s」%s，但大小 %d 字节不在 [%d,%d] 内，跳过",
-					rule.name, url, len(payload), rule.minSize, rule.maxSize,
-				)
+				asyncWarnf("「%s」过滤 %s（%s %d 字节）", rule.name, url, bodySource(rule.fromRequest), len(payload))
 				continue
 			}
 			// 复制一份：回调返回后 mitmproxy 不再保证这块内存还在。
 			body := append([]byte(nil), payload...)
-			asyncLogf("命中「%s」%s（%d 字节，来自%s）", rule.name, url, len(body), bodySource(rule.fromRequest))
+			asyncLogf("「%s」尝试上传 %s（%s %d 字节）", rule.name, url, bodySource(rule.fromRequest), len(body))
 			go rule.upload(body, vars)
 			// 一份配置里只要有一个 match_url 命中就够了，跳出 pattern 循环；
 			// 但不要 return —— 同一个 URL 允许被多份配置同时命中，
@@ -460,77 +451,45 @@ func (r asyncRule) upload(body []byte, vars map[string]string) {
 		status, message, err := r.post(client, target, filename, body, vars)
 		lastStatus, lastMessage, lastErr = status, message, err
 		if err == nil && status >= 200 && status < 300 {
-			r.notifyUser(vars, statusLine(status, message))
-			asyncLogf("「%s」上传成功 → %s HTTP %d", r.name, target, status)
+			r.finish(vars, "info", statusLine(status, message))
 			return
 		}
-		if err != nil {
-			asyncErrorf("「%s」第 %d/%d 次上传失败：%v", r.name, attempt, attempts, err)
-		} else {
-			asyncErrorf("「%s」第 %d/%d 次上传失败：HTTP %d %s", r.name, attempt, attempts, status, message)
-		}
+		// 还有下一次机会时才写 retry 行；最后一次交给 finish 出「上传失败」那行。
 		if attempt < attempts {
+			if err != nil {
+				asyncWarnf("「%s」上传失败 →%s（重试 %d/%d 次）", r.name, shorten(err.Error(), 80), attempt, attempts)
+			} else {
+				asyncWarnf("「%s」上传失败 →%s（重试 %d/%d 次）", r.name, statusLine(status, message), attempt, attempts)
+			}
 			time.Sleep(time.Duration(attempt) * 800 * time.Millisecond)
 		}
 	}
 	if lastErr != nil {
-		text := "上传失败 " + shorten(lastErr.Error(), 80)
-		if attempts > 1 {
-			text += "\n重试次数达到上限"
-		}
-		r.notifyUser(vars, text)
-	} else {
-		text := statusLine(lastStatus, lastMessage)
-		if attempts > 1 {
-			text += "\n重试次数达到上限"
-		}
-		r.notifyUser(vars, text)
+		r.finish(vars, "error", "上传失败 "+shorten(lastErr.Error(), 80))
+		return
 	}
+	r.finish(vars, "error", statusLine(lastStatus, lastMessage))
 }
 
-func (r asyncRule) notifyUser(vars map[string]string, detail string) {
+// finish 把最终结果交给 Android 侧：一行合并日志 + （配置允许时）系统通知。
+func (r asyncRule) finish(vars map[string]string, level, detail string) {
 	// 通知正文第一行永远是「[旁路上传] 配置名」，方便一眼看出是哪份规则。
 	lines := []string{"[旁路上传] " + r.name}
-	if strings.TrimSpace(detail) != "" {
-		lines = append(lines, strings.TrimSpace(detail))
+	bodyDetail := strings.TrimSpace(detail)
+	if level == "error" && r.maxRetries > 0 {
+		bodyDetail += "\n重试次数达到上限"
+	}
+	if bodyDetail != "" {
+		lines = append(lines, bodyDetail)
 	}
 	if extra := strings.TrimSpace(expandTemplate(r.extraInfo, vars)); extra != "" {
 		lines = append(lines, extra)
 	}
-	body := strings.Join(lines, "\n")
-	if r.notify {
-		asyncPush("notify", "info", "Mitt-go", body)
-	}
-	asyncLogf("通知：%s", strings.ReplaceAll(body, "\n", " "))
+	asyncPushResult(level, r.name, detail, strings.Join(lines, "\n"), r.notify)
 }
 
-// post 按需切片，把每片交给 postOnce；未开启分片时就是一次普通请求。
+// post 把 body 当成一个完整文件，发一次请求。
 func (r asyncRule) post(client *http.Client, target, filename string, body []byte, vars map[string]string) (int, string, error) {
-	if r.chunkSize <= 0 || len(body) <= r.chunkSize {
-		return r.postOnce(client, target, filename, body, vars, 0, 1)
-	}
-	total := (len(body) + r.chunkSize - 1) / r.chunkSize
-	status, message := 0, ""
-	for index := 0; index < total; index++ {
-		start := index * r.chunkSize
-		end := start + r.chunkSize
-		if end > len(body) {
-			end = len(body)
-		}
-		code, msg, err := r.postOnce(client, target, filename, body[start:end], vars, index, total)
-		if err != nil {
-			return code, msg, fmt.Errorf("分片 %d/%d: %w", index+1, total, err)
-		}
-		if code != http.StatusOK {
-			return code, msg, fmt.Errorf("分片 %d/%d: HTTP %d", index+1, total, code)
-		}
-		status, message = code, msg
-	}
-	asyncLogf("「%s」分 %d 片上传完成", r.name, total)
-	return status, message, nil
-}
-
-func (r asyncRule) postOnce(client *http.Client, target, filename string, body []byte, vars map[string]string, index, total int) (int, string, error) {
 	// 有文件名就走 multipart/form-data：很多服务端
 	// 是从 multipart 的 filename 里取名字的，裸 body 只能读到默认值。
 	var reader io.Reader
@@ -573,10 +532,6 @@ func (r asyncRule) postOnce(client *http.Client, target, filename string, body [
 				hasContentType = true
 			}
 		}
-	}
-	if r.chunkSize > 0 {
-		request.Header.Set("X-Chunk-Index", strconv.Itoa(index))
-		request.Header.Set("X-Total-Chunks", strconv.Itoa(total))
 	}
 	if multipartType != "" {
 		request.Header.Set("Content-Type", multipartType)
@@ -624,13 +579,6 @@ func extractMessage(body string) string {
 		}
 	}
 	return cleanText(body)
-}
-
-func bracket(text string) string {
-	if text == "" {
-		return ""
-	}
-	return "(" + text + ")"
 }
 
 func cleanText(text string) string {

@@ -227,6 +227,7 @@ func Start(configJSON string) error {
 	activeState = st
 	stateMu.Unlock()
 
+	resetTraffic()
 	go st.acceptTunnel()
 	if cfg.SocksEnable {
 		if err := st.startSocks(); err != nil {
@@ -292,7 +293,8 @@ func (st *engineState) acceptTunnel() {
 	}
 }
 
-func (st *engineState) handleTunnel(conn net.Conn) {
+func (st *engineState) handleTunnel(rawConn net.Conn) {
+	conn := countingConn{Conn: rawConn}
 	untrack := st.track(conn)
 	defer untrack()
 	defer conn.Close()
@@ -358,7 +360,8 @@ func (st *engineState) acceptSocks() {
 	}
 }
 
-func (st *engineState) handleSocks(conn net.Conn) {
+func (st *engineState) handleSocks(rawConn net.Conn) {
+	conn := countingConn{Conn: rawConn}
 	untrack := st.track(conn)
 	defer untrack()
 	defer conn.Close()
@@ -487,20 +490,23 @@ func (c *bufferedConn) Read(p []byte) (int, error) {
 	return c.reader.Read(p)
 }
 
+// closeWrite 半关闭写方向；countingConn 和 *net.TCPConn 都实现了。
+func closeWrite(conn net.Conn) {
+	if cw, ok := conn.(interface{ CloseWrite() error }); ok {
+		_ = cw.CloseWrite()
+	}
+}
+
 func pipeBuffered(client net.Conn, clientReader *bufio.Reader, upstream net.Conn) {
 	done := make(chan struct{}, 2)
 	go func() {
 		_, _ = io.Copy(upstream, clientReader)
-		if tcp, ok := upstream.(*net.TCPConn); ok {
-			_ = tcp.CloseWrite()
-		}
+		closeWrite(upstream)
 		done <- struct{}{}
 	}()
 	go func() {
 		_, _ = io.Copy(client, upstream)
-		if tcp, ok := client.(*net.TCPConn); ok {
-			_ = tcp.CloseWrite()
-		}
+		closeWrite(client)
 		done <- struct{}{}
 	}()
 	<-done

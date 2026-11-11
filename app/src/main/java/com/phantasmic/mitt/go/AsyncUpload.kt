@@ -203,13 +203,11 @@ object AsyncNotify {
             PackageManager.PERMISSION_GRANTED
     }
 
-    fun post(context: Context, title: String, text: String, timestamp: Long = 0L) {
+    /** 弹系统通知；返回有没有真的发出去（没有权限或系统拒绝时 false）。 */
+    fun post(context: Context, title: String, text: String, timestamp: Long = 0L): Boolean {
         ensureChannel(context)
-        if (!canPost(context)) {
-            MittLog.warn("async", "没有通知权限，跳过通知：$text")
-            return
-        }
-        val manager = context.getSystemService(NotificationManager::class.java) ?: return
+        if (!canPost(context)) return false
+        val manager = context.getSystemService(NotificationManager::class.java) ?: return false
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
         }
@@ -230,8 +228,7 @@ object AsyncNotify {
             .setAutoCancel(true)
             .setContentIntent(pending)
             .build()
-        runCatching { manager.notify(text.hashCode(), notification) }
-            .onFailure { MittLog.error("async", "通知发送失败：${it.message}") }
+        return runCatching { manager.notify(text.hashCode(), notification) }.isSuccess
     }
 }
 
@@ -242,6 +239,12 @@ data class AsyncEvent(
     val title: String,
     val text: String,
     val time: Long,
+    /** 配置名（result 事件用它拼日志行）。 */
+    val name: String = "",
+    /** 状态码 + 服务器返回的那句，和通知第二行一致。 */
+    val detail: String = "",
+    /** 这条结果要不要弹系统通知。 */
+    val notify: Boolean = false,
 )
 
 /**
@@ -268,30 +271,48 @@ object AsyncUploadRuntime {
             emptyList()
         }
         if (!ProxyCore.isRunning()) {
-            MittLog.debug("async") { "内核未运行，配置等下次 start 再下发" }
+            MittLog.debug("async", MittLog.GROUP_MODULE) { "内核未运行，配置等下次 start 再下发" }
             return
         }
         ProxyCore.setAsyncUpload(enabled, configs)
-        MittLog.info(
-            "async",
-            "下发配置：总开关=$enabled，${if (enabled) configs.size else 0} 份生效",
-        )
+        MittLog.debug("async", MittLog.GROUP_MODULE) {
+            "下发配置：总开关=$enabled，${if (enabled) configs.size else 0} 份生效"
+        }
     }
 
-    /** 轮询取走内核攒下的日志 / 通知事件。 */
+    /** 轮询取走内核攒下的日志 / 上传结果事件。 */
     fun drain() {
         val context = this.context ?: return
         val events = ProxyCore.asyncEvents()
         if (events.isEmpty()) return
         events.forEach { event ->
             when {
-                event.kind == "notify" -> {
-                    MittLog.info("async", event.text.replace("\n", " "))
-                    AsyncNotify.post(context, event.title, event.text, event.time)
-                }
-                event.level == "warn" -> MittLog.warn("async", event.text)
-                else -> MittLog.info("async", event.text)
+                event.kind == "result" -> reportResult(context, event)
+                event.level == "warn" -> MittLog.warn("async", event.text, MittLog.GROUP_MODULE)
+                else -> MittLog.info("async", event.text, MittLog.GROUP_MODULE)
             }
+        }
+    }
+
+    /**
+     * 上传最终结果：弹通知（配置允许时），并合并成一行日志——
+     * `「配置名」上传成功 通知成功→200 上传成功`。
+     * 「通知成功/失败」说的是系统通知有没有发出去，没权限时这里也能一眼看到。
+     */
+    private fun reportResult(context: Context, event: AsyncEvent) {
+        val succeeded = event.level != "error"
+        val notified = event.notify && AsyncNotify.post(context, event.title, event.text, event.time)
+        val outcome = if (succeeded) "上传成功" else "上传失败"
+        val token = when {
+            !event.notify -> " →"
+            notified -> " 通知成功→"
+            else -> " 通知失败→"
+        }
+        val line = "「${event.name}」$outcome$token${event.detail}"
+        if (succeeded) {
+            MittLog.info("async", line, MittLog.GROUP_MODULE)
+        } else {
+            MittLog.error("async", line, MittLog.GROUP_MODULE)
         }
     }
 }

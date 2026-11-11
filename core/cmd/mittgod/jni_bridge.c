@@ -109,3 +109,9 @@ Java_com_phantasmic_mitt_go_GoCoreJni_asyncEvents(JNIEnv *env, jobject thiz) {
     (void)thiz;
     return take_string(env, MittGoAsyncEvents());
 }
+
+JNIEXPORT jstring JNICALL
+Java_com_phantasmic_mitt_go_GoCoreJni_traffic(JNIEnv *env, jobject thiz) {
+    (void)thiz;
+    return take_string(env, MittGoTraffic());
+}

@@ -4,8 +4,10 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
 import android.net.Network
@@ -14,11 +16,15 @@ import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import com.phantasmic.mitt.go.vpn.ConnectionManager
 import com.phantasmic.mitt.go.vpn.ProxyVpnThread
 import com.phantasmic.mitt.go.vpn.socket.ProtectSocket
 import com.phantasmic.mitt.go.vpn.socket.ProtectSocketHolder
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.TimeUnit
 
 /**
  * Owns the Android TUN interface and the Kotlin packet transport.
@@ -33,8 +39,14 @@ class ProxyVpnService : VpnService(), ProtectSocket {
         private const val CHANNEL_ID = "mitt-go-vpn"
         private const val NOTIFICATION_ID = 9527
 
+        /** 抓包通知刷新间隔：只读两个累计计数，1 秒一次对性能没有可感知影响。 */
+        private const val TRAFFIC_INTERVAL_MS = 1_000L
+
         const val ACTION_START = "com.phantasmic.mitt.go.START"
         const val ACTION_STOP = "com.phantasmic.mitt.go.STOP"
+
+        /** 控制中心磁贴点「停止」时发的广播；比 stopService 稳。 */
+        const val ACTION_STOP_CAPTURE = "com.phantasmic.mitt.go.STOP_CAPTURE"
 
         const val EXTRA_PROXY_MODE = "proxy_mode"
         const val EXTRA_HTTP_PORT = "http_port"
@@ -65,7 +77,22 @@ class ProxyVpnService : VpnService(), ProtectSocket {
             Intent(context, ProxyVpnService::class.java).apply { action = ACTION_STOP }
     }
 
+    private val stopCaptureReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == ACTION_STOP_CAPTURE) {
+                MittLog.info("mitm", "控制中心磁贴：停止抓包")
+                disconnect()
+            }
+        }
+    }
+
     private val worker = Executors.newSingleThreadExecutor()
+    private val trafficScheduler: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
+    private var trafficFuture: ScheduledFuture<*>? = null
+    private var trafficUpBase = 0L
+    private var trafficDownBase = 0L
+    private var proxyOnlyMode = false
+    private var proxyOnlyPort = 0
     private var vpnInterface: ParcelFileDescriptor? = null
     private var vpnThread: ProxyVpnThread? = null
     private var connectivityManager: ConnectivityManager? = null
@@ -80,6 +107,12 @@ class ProxyVpnService : VpnService(), ProtectSocket {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        ContextCompat.registerReceiver(
+            this,
+            stopCaptureReceiver,
+            IntentFilter(ACTION_STOP_CAPTURE),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -95,11 +128,11 @@ class ProxyVpnService : VpnService(), ProtectSocket {
         val proxyMode = runCatching {
             ProxyMode.valueOf(intent.getStringExtra(EXTRA_PROXY_MODE) ?: ProxyMode.VPN_TUN.name)
         }.getOrDefault(ProxyMode.VPN_TUN)
-        if (proxyMode == ProxyMode.PROXY_ONLY) {
-            startProxyOnlyForeground()
-        } else if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            // On Android 14+ the VPN framework owns the system notification.
-            startForegroundCompat(buildNotification())
+        // 抓包中要常驻一条带吞吐和「停止抓包」的通知：两种模式都以前台服务跑。
+        try {
+            startForegroundCompat(buildNotification(getString(R.string.vpn_notification_starting)))
+        } catch (t: Throwable) {
+            MittLog.warn("mitm", "抓包通知启动失败：${t.message ?: t.javaClass.simpleName}")
         }
 
         if (ProxyRuntime.status.value.running || starting) return START_STICKY
@@ -109,6 +142,8 @@ class ProxyVpnService : VpnService(), ProtectSocket {
         val tunnelPort = intent.getIntExtra(EXTRA_TUNNEL_PORT, 9098)
         val socksPort = intent.getIntExtra(EXTRA_SOCKS_PORT, 1080)
         val socksEnabled = intent.getBooleanExtra(EXTRA_SOCKS_ENABLED, false)
+        proxyOnlyMode = proxyMode == ProxyMode.PROXY_ONLY
+        proxyOnlyPort = httpPort
 
         ProxyRuntime.markStarting()
         worker.execute {
@@ -174,6 +209,7 @@ class ProxyVpnService : VpnService(), ProtectSocket {
                 }
                 ProxyRuntime.markRunning()
                 starting = false
+                startTrafficTicker()
                 CaptureStore.beginSession()
                 if (proxyMode == ProxyMode.PROXY_ONLY) {
                     MittLog.info("mitm", "仅代理模式开始监听 127.0.0.1:$httpPort")
@@ -191,6 +227,7 @@ class ProxyVpnService : VpnService(), ProtectSocket {
                 ProxyRuntime.markError(t.message ?: t.javaClass.simpleName)
                 runCatching { ProxyCore.stop() }
                 closeVpnResources()
+                stopTrafficTicker()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
@@ -206,7 +243,9 @@ class ProxyVpnService : VpnService(), ProtectSocket {
 
     override fun onDestroy() {
         disconnect()
+        runCatching { unregisterReceiver(stopCaptureReceiver) }
         worker.shutdown()
+        trafficScheduler.shutdownNow()
         super.onDestroy()
     }
 
@@ -299,6 +338,7 @@ class ProxyVpnService : VpnService(), ProtectSocket {
                 runCatching { ProxyCore.stop() }
             }
         }
+        stopTrafficTicker()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -320,7 +360,7 @@ class ProxyVpnService : VpnService(), ProtectSocket {
         )
     }
 
-    private fun buildNotification(): Notification {
+    private fun buildNotification(content: CharSequence): Notification {
         val openIntent = PendingIntent.getActivity(
             this,
             1,
@@ -335,23 +375,19 @@ class ProxyVpnService : VpnService(), ProtectSocket {
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_mitt_go)
-            .setContentTitle(getString(R.string.vpn_active_notification_title))
-            .setContentText(getString(R.string.vpn_active_notification_content))
+            .setContentTitle(getString(R.string.app_name))
+            .setContentText(content)
             .setContentIntent(openIntent)
-            .addAction(0, "停止抓包", stopIntent)
+            .addAction(0, getString(R.string.vpn_notification_stop), stopIntent)
             .setOngoing(true)
+            .setShowWhen(false)
+            .setOnlyAlertOnce(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .build()
     }
 
     private fun startForegroundCompat(notification: Notification) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(NOTIFICATION_ID, notification)
-        }
-    }
-
-    private fun startProxyOnlyForeground() {
-        val notification = buildNotification()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startForeground(
                 NOTIFICATION_ID,
@@ -361,5 +397,53 @@ class ProxyVpnService : VpnService(), ProtectSocket {
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
+    }
+
+    /** 每秒算一次吞吐刷新通知；字节数取差值，成功/失败是内核的累计条数。 */
+    private fun startTrafficTicker() {
+        if (trafficFuture != null) return
+        val initial = runCatching { ProxyCore.traffic() }.getOrDefault(TrafficStats())
+        trafficUpBase = initial.up
+        trafficDownBase = initial.down
+        trafficFuture = trafficScheduler.scheduleAtFixedRate({
+            runCatching {
+                val stats = ProxyCore.traffic()
+                val upRate = (stats.up - trafficUpBase).coerceAtLeast(0L)
+                val downRate = (stats.down - trafficDownBase).coerceAtLeast(0L)
+                trafficUpBase = stats.up
+                trafficDownBase = stats.down
+                updateNotification(statusText(upRate, downRate, stats))
+            }
+        }, TRAFFIC_INTERVAL_MS, TRAFFIC_INTERVAL_MS, TimeUnit.MILLISECONDS)
+        updateNotification(statusText(0, 0, initial))
+    }
+
+    private fun stopTrafficTicker() {
+        trafficFuture?.cancel(false)
+        trafficFuture = null
+    }
+
+    /** 一行状态：`1.24 MB/s↑  86.0 KB/s↓  |  32 成功  1 失败`。 */
+    private fun statusText(upRate: Long, downRate: Long, stats: TrafficStats): String =
+        if (proxyOnlyMode) {
+            getString(
+                R.string.vpn_notification_proxy_only,
+                proxyOnlyPort,
+                stats.ok,
+                stats.fail,
+            )
+        } else {
+            getString(
+                R.string.vpn_notification_line,
+                formatSize(upRate),
+                formatSize(downRate),
+                stats.ok,
+                stats.fail,
+            )
+        }
+
+    private fun updateNotification(content: CharSequence) {
+        val manager = getSystemService(NotificationManager::class.java) ?: return
+        runCatching { manager.notify(NOTIFICATION_ID, buildNotification(content)) }
     }
 }

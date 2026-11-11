@@ -63,4 +63,7 @@ internal object GoCoreJni {
 
     /** 取走内核攒下的旁路上传日志/通知事件（JSON）。 */
     external fun asyncEvents(): String
+
+    /** 内核累计上下行字节数（JSON：{"up":N,"down":N}），用来算实时吞吐。 */
+    external fun traffic(): String
 }

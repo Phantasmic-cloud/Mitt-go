@@ -1,0 +1,30 @@
+# 旁路上传配置示例
+name: 演示例子
+match_url:
+  # 命名捕获组会变成变量，可在 server_url / rename / headers / extra_info 里用
+  - '^https://example\.com/api/user/(?<id>\d+)/example(?:\?.*)?$'
+upload:
+  server_url: https://api.example.com/api/{id}/upload
+  tls_skip_verify: false
+  headers:
+    - Content-Type: application/octet-stream
+    - User-Agent: Mitt/2.0
+    - X-upload-id: {random}
+    - X-original-url: {original_url}
+    - Authorization: Bearer <token>
+  file:
+    type: Response Body      # 也可以写 Request Body
+    rename: example-{id}-{time}.bin   # 留空则发裸 body
+    size_limit:              # 只有大小落在区间内的才上传；缺省一端表示不限
+      min: 51200
+      max: 2097152
+  timeout: 10
+  max_retries: 0
+notify:
+  enabled: true
+  extra_info: '{id}'
+  
+# 内置变量：
+#{time}=东八区 yyyyMMdd-HHmmss，
+#{original_url}=命中的原始 URL，
+#{random}=9 位小写十六进制随机串

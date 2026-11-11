@@ -18,8 +18,14 @@ data class LogEntry(
     val level: LogLevel,
     val tag: String,
     val message: String,
+    /** 分组标签（目前只有模块类日志用 `Module`）；null 时不显示这一层。 */
+    val group: String? = null,
 ) {
-    fun format(): String = "[${MittLog.timeOf(time)}] [${level.label}] [$tag] $message"
+    fun format(): String = buildString {
+        append("[${MittLog.timeOf(time)}] [${level.label}] ")
+        if (!group.isNullOrBlank()) append("[$group] ")
+        append("[$tag] $message")
+    }
 }
 
 /**
@@ -32,6 +38,9 @@ data class LogEntry(
 object MittLog {
     private const val CAPACITY = 4000
 
+    /** 模块类日志的分组标签：日志页显示成 `[Module] [async] …`。 */
+    const val GROUP_MODULE = "Module"
+
     @Volatile
     var debugEnabled: Boolean = false
 
@@ -42,19 +51,19 @@ object MittLog {
 
     fun timeOf(time: Long): String = TimeFmt.clock(time)
 
-    fun debug(tag: String, message: () -> String) {
+    fun debug(tag: String, group: String? = null, message: () -> String) {
         if (!debugEnabled) return
-        add(LogLevel.DEBUG, tag, message())
+        add(LogLevel.DEBUG, tag, message(), group)
     }
 
     /** 批量写 DEBUG 日志：抓包时一次轮询可能带来几十条，合并成一次刷新。 */
-    fun debugLines(tag: String, lines: () -> List<String>) {
+    fun debugLines(tag: String, group: String? = null, lines: () -> List<String>) {
         if (!debugEnabled) return
         val messages = lines()
         if (messages.isEmpty()) return
         val base = System.currentTimeMillis()
         val batch = messages.mapIndexed { index, message ->
-            LogEntry(base + index, LogLevel.DEBUG, tag, message)
+            LogEntry(base + index, LogLevel.DEBUG, tag, message, group)
         }
         synchronized(lock) {
             val current = _entries.value
@@ -68,11 +77,14 @@ object MittLog {
         batch.forEach { Log.d(tag, it.message) }
     }
 
-    fun info(tag: String, message: String) = add(LogLevel.INFO, tag, message)
+    fun info(tag: String, message: String, group: String? = null) =
+        add(LogLevel.INFO, tag, message, group)
 
-    fun warn(tag: String, message: String) = add(LogLevel.WARNING, tag, message)
+    fun warn(tag: String, message: String, group: String? = null) =
+        add(LogLevel.WARNING, tag, message, group)
 
-    fun error(tag: String, message: String) = add(LogLevel.ERROR, tag, message)
+    fun error(tag: String, message: String, group: String? = null) =
+        add(LogLevel.ERROR, tag, message, group)
 
     fun clear() {
         synchronized(lock) { _entries.value = emptyList() }
@@ -90,9 +102,9 @@ object MittLog {
         return DownloadStore.save(context, name, "text/plain", body.toByteArray(Charsets.UTF_8))
     }
 
-    private fun add(level: LogLevel, tag: String, message: String) {
+    private fun add(level: LogLevel, tag: String, message: String, group: String? = null) {
         if (level == LogLevel.DEBUG && !debugEnabled) return
-        val entry = LogEntry(System.currentTimeMillis(), level, tag, message)
+        val entry = LogEntry(System.currentTimeMillis(), level, tag, message, group)
         synchronized(lock) {
             val current = _entries.value
             _entries.value = if (current.size >= CAPACITY) {

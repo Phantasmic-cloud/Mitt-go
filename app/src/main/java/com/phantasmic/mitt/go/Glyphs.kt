@@ -107,15 +107,15 @@ fun CloseGlyph(color: Color, size: Dp = 16.dp, onClick: (() -> Unit)? = null) {
     }
 }
 
-/** 右上角的「新建」加号。 */
+/** 「新建配置」的加号（右下角蓝球里用，尺寸/线宽可调）。 */
 @Composable
-fun PlusGlyph(color: Color) {
-    Canvas(Modifier.size(18.dp)) {
-        val stroke = 1.8.dp.toPx()
-        val w = size.width
-        val h = size.height
-        drawLine(color, Offset(w * 0.5f, h * 0.16f), Offset(w * 0.5f, h * 0.84f), stroke, cap = StrokeCap.Round)
-        drawLine(color, Offset(w * 0.16f, h * 0.5f), Offset(w * 0.84f, h * 0.5f), stroke, cap = StrokeCap.Round)
+fun PlusGlyph(color: Color, size: Dp = 18.dp, strokeWidth: Dp = 1.8.dp) {
+    Canvas(Modifier.size(size)) {
+        val stroke = strokeWidth.toPx()
+        val w = size.toPx()
+        val h = size.toPx()
+        drawLine(color, Offset(w * 0.5f, h * 0.18f), Offset(w * 0.5f, h * 0.82f), stroke, cap = StrokeCap.Round)
+        drawLine(color, Offset(w * 0.18f, h * 0.5f), Offset(w * 0.82f, h * 0.5f), stroke, cap = StrokeCap.Round)
     }
 }
 

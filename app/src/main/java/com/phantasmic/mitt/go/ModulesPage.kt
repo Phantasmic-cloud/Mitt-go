@@ -27,7 +27,7 @@ fun ModulesPage(
     onOpenAsync: () -> Unit,
 ) {
     val colors = MiuixTheme.colorScheme
-    LaunchedEffect(Unit) { MittLog.debug("Module") { "打开模块页" } }
+    LaunchedEffect(Unit) { MittLog.debug("page", MittLog.GROUP_MODULE) { "打开模块页" } }
     Column(
         Modifier
             .fillMaxSize()

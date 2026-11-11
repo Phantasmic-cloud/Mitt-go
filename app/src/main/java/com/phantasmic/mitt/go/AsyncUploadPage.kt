@@ -34,6 +34,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -58,11 +59,13 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.OffsetMapping
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.rememberTextMeasurer
@@ -73,12 +76,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.sp
+import com.phantasmic.mitt.go.ui.CircleGlassButton
 import com.phantasmic.mitt.go.ui.GlassCard
 import com.phantasmic.mitt.go.ui.GlassLevel
+import com.phantasmic.mitt.go.ui.LocalPageBackdrop
 import com.phantasmic.mitt.go.ui.GlassMenuItem
 import com.phantasmic.mitt.go.ui.GlassMenuItem
 import com.phantasmic.mitt.go.ui.GlassPopover
 import com.phantasmic.mitt.go.ui.MittModal
+import com.phantasmic.mitt.go.ui.pageBackdrop
+import com.phantasmic.mitt.go.ui.rememberPageBackdrop
 import kotlin.math.roundToInt
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
@@ -97,10 +104,9 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
  */
 class AsyncUploadUi {
     var importTick by mutableIntStateOf(0)
-    var createTick by mutableIntStateOf(0)
     var editorOpen by mutableStateOf(false)
     var editorId by mutableStateOf<String?>(null)
-    var editorSeed by mutableStateOf(YAML_TEMPLATE)
+    var editorSeed by mutableStateOf("")
     /** 单份配置的操作单（编辑 / 导出 / 删除），null = 关着。 */
     var actionTarget by mutableStateOf<AsyncConfig?>(null)
     /** 点「⋯」时那个按钮在窗口里的位置，菜单贴着它弹。 */
@@ -117,23 +123,29 @@ class AsyncUploadUi {
     }
 }
 
-private const val YAML_TEMPLATE = """enable: true
-name: 我的配置
+/**
+ * 新建配置的种子：`assets/async_upload_example.yaml`，和仓库里的
+ * `example/async_upload.yaml` 同源（`scripts/sync-github.sh` 会把这个资产铺过去）。
+ * 资产读不到时退回一份最小可用配置。
+ */
+private fun demoYaml(context: Context): String =
+    runCatching {
+        context.assets.open("async_upload_example.yaml")
+            .bufferedReader(Charsets.UTF_8)
+            .use { it.readText() }
+    }.getOrDefault(FALLBACK_YAML).ifBlank { FALLBACK_YAML }
+
+private const val FALLBACK_YAML = """name: 我的配置
 match_url:
-  - "^https://example\\.com/api/(?<id>\\d+)$"
+  - '^https://example\\.com/api/(?<id>\\d+)$'
 upload:
   server_url: https://example.com/upload/{id}
-  tls_skip_verify: false
-  headers:
-    - Content-Type: application/octet-stream
   file:
     type: Response Body
-    rename: example-{id}-{time}.bin
   timeout: 10
-  max_retries: 0
 notify:
   enabled: true
-  extra_info: {id}
+  extra_info: '{id}'
 """
 
 /**
@@ -164,9 +176,9 @@ fun AsyncUploadPage(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
         if (granted) {
-            MittLog.info("async", "已获得通知权限")
+            MittLog.info("async", "已获得通知权限", MittLog.GROUP_MODULE)
         } else {
-            MittLog.warn("async", "没有通知权限，上传结果只会写进日志页")
+            MittLog.warn("async", "没有通知权限，上传结果只会写进日志页", MittLog.GROUP_MODULE)
             Toast.makeText(context, "没有通知权限，结果只会写进日志页", Toast.LENGTH_LONG).show()
         }
     }
@@ -177,11 +189,11 @@ fun AsyncUploadPage(
         if (uri == null) return@rememberLauncherForActivityResult
         AsyncUploadStore.readText(context, uri, queryDisplayName(context, uri))
             .onSuccess { raw ->
-                MittLog.info("async", "已读入配置文件，等待确认保存")
+                MittLog.info("async", "已读入配置文件，等待确认保存", MittLog.GROUP_MODULE)
                 ui.openEditor(null, raw)
             }
             .onFailure { error ->
-                MittLog.warn("async", "导入失败：${error.message}")
+                MittLog.warn("async", "导入失败：${error.message}", MittLog.GROUP_MODULE)
                 Toast.makeText(context, "导入失败：${error.message}", Toast.LENGTH_LONG).show()
             }
     }
@@ -199,90 +211,117 @@ fun AsyncUploadPage(
     }
 
     fun openCreate() {
-        ui.openEditor(null, YAML_TEMPLATE)
-        MittLog.debug("async") { "打开新建配置编辑器" }
+        ui.openEditor(null, demoYaml(context))
+        MittLog.debug("async", MittLog.GROUP_MODULE) { "打开新建配置编辑器" }
     }
 
     LaunchedEffect(ui.importTick) {
         if (ui.importTick > 0) openImport()
     }
-    LaunchedEffect(ui.createTick) {
-        if (ui.createTick > 0) openCreate()
-    }
 
-    Box(modifier.fillMaxSize()) {
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(
-            start = 14.dp,
-            end = 14.dp,
-            top = topInset + 6.dp,
-            bottom = bottomInset + 28.dp,
-        ),
-    ) {
-        item(key = "switch") {
-            Card(Modifier.fillMaxWidth()) {
-                SwitchPreference(
-                    checked = settings.asyncUploadEnabled,
-                    title = "旁路上传",
-                    summary = "命中规则的请求/响应体会异步 POST 到服务器，不影响原来的流量",
-                    onCheckedChange = { enabled ->
-                        MittLog.info("async", "总开关 → $enabled")
-                        onSettingsChange(settings.copy(asyncUploadEnabled = enabled))
-                        if (enabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                            !AsyncNotify.canPost(context)
-                        ) {
-                            permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                        }
-                    },
-                )
-            }
-        }
-
-        if (configs.isEmpty()) {
-            item(key = "empty") {
-                Spacer(Modifier.height(12.dp))
+    // 加号球要画成玻璃：页面自己建一块「只录列表」的取景图层，球是它的兄弟。
+    // 直接塞进记录节点里会让 hwui 的 RenderNode 成环，闪退（和抓包页 FAB 同一套写法）。
+    val listBackdrop = rememberPageBackdrop()
+    CompositionLocalProvider(LocalPageBackdrop provides listBackdrop) {
+        Box(modifier.fillMaxSize()) {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pageBackdrop(listBackdrop),
+            contentPadding = PaddingValues(
+                start = 14.dp,
+                end = 14.dp,
+                top = topInset + 6.dp,
+                bottom = bottomInset + 96.dp,
+            ),
+        ) {
+            item(key = "switch") {
                 Card(Modifier.fillMaxWidth()) {
-                    Text(
-                        text = "还没有配置。点右上角的两个按钮：箭头导入 .yaml，加号手写一份。",
-                        fontSize = 12.sp,
-                        lineHeight = 18.sp,
-                        color = colors.onSurfaceSecondary,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp),
+                    SwitchPreference(
+                        checked = settings.asyncUploadEnabled,
+                        title = "旁路上传",
+                        summary = "命中规则的请求/响应体会异步 POST 到服务器，不影响原来的流量",
+                        onCheckedChange = { enabled ->
+                            MittLog.info("async", "总开关 → $enabled", MittLog.GROUP_MODULE)
+                            onSettingsChange(settings.copy(asyncUploadEnabled = enabled))
+                            if (enabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                                !AsyncNotify.canPost(context)
+                            ) {
+                                permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                            }
+                        },
                     )
                 }
             }
-        } else {
-            items(configs, key = { it.id }) { config ->
-                // animateItem：新增时下面的配置被顶下去，删除时下面的补上来。
-                Column(Modifier.animateItem()) {
+
+            if (configs.isEmpty()) {
+                item(key = "empty") {
                     Spacer(Modifier.height(12.dp))
                     Card(Modifier.fillMaxWidth()) {
-                        AsyncConfigRow(
-                            config = config,
-                            onClick = {
-                                ui.openEditor(config.id, config.raw)
-                                MittLog.debug("async") { "编辑配置「${config.name}」" }
-                            },
-                            onToggle = { checked ->
-                                AsyncUploadStore.setEnabled(context, config.id, checked)
-                                AsyncUploadRuntime.sync()
-                                refresh()
-                                MittLog.info(
-                                    "async",
-                                    (if (checked) "已启用「" else "已停用「") + config.name + "」",
-                                )
-                            },
-                            onMore = { anchor ->
-                                ui.actionTarget = config
-                                ui.actionAnchor = anchor
-                            },
+                        Text(
+                            text = "还没有配置。点右上角的箭头导入 .yaml，或点右下角的蓝色加号手写一份。",
+                            fontSize = 12.sp,
+                            lineHeight = 18.sp,
+                            color = colors.onSurfaceSecondary,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp),
                         )
                     }
                 }
+            } else {
+                items(configs, key = { it.id }) { config ->
+                    // animateItem：新增时下面的配置被顶下去，删除时下面的补上来。
+                    Column(Modifier.animateItem()) {
+                        Spacer(Modifier.height(12.dp))
+                        Card(Modifier.fillMaxWidth()) {
+                            AsyncConfigRow(
+                                config = config,
+                                onClick = {
+                                    ui.openEditor(config.id, config.raw)
+                                    MittLog.debug("async", MittLog.GROUP_MODULE) { "编辑配置「${config.name}」" }
+                                },
+                                onToggle = { checked ->
+                                    AsyncUploadStore.setEnabled(context, config.id, checked)
+                                    AsyncUploadRuntime.sync()
+                                    refresh()
+                                    MittLog.info(
+                                        "async",
+                                        (if (checked) "已启用「" else "已停用「") + config.name + "」",
+                                        MittLog.GROUP_MODULE,
+                                    )
+                                },
+                                onMore = { anchor ->
+                                    ui.actionTarget = config
+                                    ui.actionAnchor = anchor
+                                },
+                            )
+                        }
+                    }
+                }
             }
+            }
+
+            CreateConfigButton(
+                onClick = { openCreate() },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 40.dp, bottom = bottomInset + 76.dp),
+            )
         }
     }
+}
+
+/**
+ * 右下角的「新建配置」：和抓包页右上角三点同一个 `CircleGlassButton`（一圈玻璃），
+ * 只是中间的加号用蓝色。玻璃要画在「只录列表」的取景图层外面（见页面里的 listBackdrop）。
+ */
+@Composable
+private fun CreateConfigButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
+    CircleGlassButton(
+        onClick = onClick,
+        modifier = modifier,
+        size = 56.dp,
+    ) {
+        PlusGlyph(color = Color(0xFF2F6FED), size = 24.dp, strokeWidth = 2.4.dp)
     }
 }
 
@@ -423,10 +462,10 @@ fun AsyncConfigMenu(ui: AsyncUploadUi, modifier: Modifier = Modifier) {
                     ui.actionTarget = null
                     val name = AsyncUploadStore.export(context, config)
                     if (name == null) {
-                        MittLog.warn("async", "导出「${config.name}」失败")
+                        MittLog.warn("async", "导出「${config.name}」失败", MittLog.GROUP_MODULE)
                         Toast.makeText(context, "导出失败", Toast.LENGTH_SHORT).show()
                     } else {
-                        MittLog.info("async", "已导出 $name")
+                        MittLog.info("async", "已导出 $name", MittLog.GROUP_MODULE)
                         Toast.makeText(context, "已导出：$name", Toast.LENGTH_SHORT).show()
                     }
                 }
@@ -438,7 +477,7 @@ fun AsyncConfigMenu(ui: AsyncUploadUi, modifier: Modifier = Modifier) {
                     ui.actionTarget = null
                     AsyncUploadStore.delete(context, config.id)
                     AsyncUploadRuntime.sync()
-                    MittLog.info("async", "已删除配置「${config.name}」")
+                    MittLog.info("async", "已删除配置「${config.name}」", MittLog.GROUP_MODULE)
                 }
             }
         }
@@ -477,12 +516,12 @@ fun YamlEditorOverlay(ui: AsyncUploadUi, modifier: Modifier = Modifier) {
                     runCatching { AsyncUploadStore.save(context, text, id) }
                         .onSuccess { config ->
                             ui.closeEditor()
-                            MittLog.info("async", "已保存配置「${config.name}」")
+                            MittLog.info("async", "已保存配置「${config.name}」", MittLog.GROUP_MODULE)
                             Toast.makeText(context, "已保存：${config.name}", Toast.LENGTH_SHORT).show()
                             AsyncUploadRuntime.sync()
                         }
                         .onFailure { error ->
-                            MittLog.warn("async", "保存失败：${error.message}")
+                            MittLog.warn("async", "保存失败：${error.message}", MittLog.GROUP_MODULE)
                             Toast.makeText(context, "保存失败：${error.message}", Toast.LENGTH_LONG).show()
                         }
                 },
@@ -506,7 +545,9 @@ private fun ColumnScope.YamlEditorBody(
 ) {
     val colors = MiuixTheme.colorScheme
     // 换一份 seed 就重置正文（导入/新建都会换 seed）。
-    var text by remember(initial) { mutableStateOf(initial) }
+    // 用 TextFieldValue 而不是 String：回车自动缩进要看光标位置。
+    var value by remember(initial) { mutableStateOf(TextFieldValue(initial)) }
+    val text = value.text
     val vertical = rememberScrollState()
     var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
     val measurer = rememberTextMeasurer()
@@ -541,6 +582,9 @@ private fun ColumnScope.YamlEditorBody(
         fontFamily = FontFamily.Monospace,
         color = Color(0xFF9E9E9E),
     )
+    // 缩进辅助线/分隔线：跟主色调，透明度抬高一点，深色浅色都看得清。
+    val guideColor = colors.primary.copy(alpha = 0.34f)
+    val dividerColor = colors.primary.copy(alpha = 0.20f)
 
     Row(
         Modifier.fillMaxWidth(),
@@ -573,7 +617,7 @@ private fun ColumnScope.YamlEditorBody(
 
                     // 行号列与正文之间的分隔线。
                     drawLine(
-                        color = Color(0x332F6FED),
+                        color = dividerColor,
                         start = Offset(textLeft, 0f),
                         end = Offset(textLeft, this.size.height),
                         strokeWidth = 1f,
@@ -584,7 +628,7 @@ private fun ColumnScope.YamlEditorBody(
                     for (level in 1..maxIndent) {
                         val x = textLeft + step * level
                         drawLine(
-                            color = Color(0x222F6FED),
+                            color = guideColor,
                             start = Offset(x, 0f),
                             end = Offset(x, this.size.height),
                             strokeWidth = 1f,
@@ -643,8 +687,8 @@ private fun ColumnScope.YamlEditorBody(
         ) {
             Spacer(Modifier.width(gutterWidth))
             BasicTextField(
-                value = text,
-                onValueChange = { text = it },
+                value = value,
+                onValueChange = { candidate -> value = autoIndentAfterEnter(value, candidate) },
                 onTextLayout = { layout = it },
                 textStyle = TextStyle(
                     fontSize = textSize,
@@ -684,6 +728,30 @@ private fun ColumnScope.YamlEditorBody(
             Text("保存")
         }
     }
+}
+
+/**
+ * 回车后自动落到当前行的同一缩进。
+ *
+ * 只处理「无选区、光标处恰好插入了一个 \n」这一种变化；粘贴、删除、输入法
+ * 组词都原样放行，避免把别的编辑动作改坏。
+ */
+private fun autoIndentAfterEnter(previous: TextFieldValue, candidate: TextFieldValue): TextFieldValue {
+    val before = previous.text
+    val after = candidate.text
+    if (!previous.selection.collapsed) return candidate
+    val caret = previous.selection.start
+    if (after.length != before.length + 1) return candidate
+    if (candidate.selection.start != caret + 1) return candidate
+    if (after.getOrNull(caret) != '\n') return candidate
+    if (after.substring(0, caret) + after.substring(caret + 1) != before) return candidate
+    val lineStart = before.lastIndexOf('\n', caret - 1).let { if (it < 0) 0 else it + 1 }
+    var spaces = 0
+    while (lineStart + spaces < caret && before[lineStart + spaces] == ' ') spaces++
+    if (spaces == 0) return candidate
+    val indent = " ".repeat(spaces)
+    val text = after.substring(0, caret + 1) + indent + after.substring(caret + 1)
+    return TextFieldValue(text, TextRange(caret + 1 + spaces))
 }
 
 /**

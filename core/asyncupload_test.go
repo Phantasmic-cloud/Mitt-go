@@ -1,7 +1,6 @@
 package mittgo
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -142,18 +142,24 @@ func TestAsyncUploadPostsBody(t *testing.T) {
 		t.Fatalf("filename = %q / header %q", gotName, gotFileName)
 	}
 	notices := takeNotices()
-	var title, text string
-	for _, item := range notices {
-		if item.Kind == "notify" {
-			title, text = item.Title, item.Text
+	var result *asyncNotice
+	for index := range notices {
+		if notices[index].Kind == "result" {
+			result = &notices[index]
 		}
 	}
-	if title != "Mitt-go" {
-		t.Fatalf("title = %q", title)
+	if result == nil {
+		t.Fatalf("expected a result event, got %v", notices)
+	}
+	if result.Title != "Mitt-go" || result.Level != "info" {
+		t.Fatalf("title/level = %q/%q", result.Title, result.Level)
+	}
+	if result.Name != "演示例子" || result.Detail != "200 上传成功" || !result.Notify {
+		t.Fatalf("name/detail/notify = %q/%q/%v", result.Name, result.Detail, result.Notify)
 	}
 	want := "[旁路上传] 演示例子\n200 上传成功\n123"
-	if text != want {
-		t.Fatalf("text = %q, want %q", text, want)
+	if result.Text != want {
+		t.Fatalf("text = %q, want %q", result.Text, want)
 	}
 }
 
@@ -173,15 +179,29 @@ func TestAsyncUploadReportsFailure(t *testing.T) {
 	rule.upload([]byte("x"), map[string]string{"user_id": "42", "time": "t0"})
 
 	notices := takeNotices()
-	var notify string
-	for _, item := range notices {
-		if item.Kind == "notify" {
-			notify = item.Text
+	var result *asyncNotice
+	var retryLine string
+	for index := range notices {
+		switch notices[index].Kind {
+		case "result":
+			result = &notices[index]
+		case "log":
+			retryLine = notices[index].Text
 		}
 	}
+	if result == nil {
+		t.Fatalf("expected a result event, got %v", notices)
+	}
+	if result.Level != "error" || result.Detail != "429 rate_limit_exceeded" {
+		t.Fatalf("level/detail = %q/%q", result.Level, result.Detail)
+	}
 	want := "[旁路上传] 演示例子\n429 rate_limit_exceeded\n重试次数达到上限\n42"
-	if notify != want {
-		t.Fatalf("notify = %q, want %q", notify, want)
+	if result.Text != want {
+		t.Fatalf("text = %q, want %q", result.Text, want)
+	}
+	wantRetry := "「演示例子」上传失败 →429 rate_limit_exceeded（重试 1/2 次）"
+	if retryLine != wantRetry {
+		t.Fatalf("retry log = %q, want %q", retryLine, wantRetry)
 	}
 }
 
@@ -272,19 +292,101 @@ upload:
 	}
 }
 
-func TestAsyncChunkUpload(t *testing.T) {
+// 命中/过滤两条日志：过滤是 WARNING，尝试上传是 INFO。
+func TestAsyncFlowLogLines(t *testing.T) {
+	resetAsyncQueue()
+	var hits int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		_, _ = w.Write([]byte(`{"detail":"ok"}`))
+	}))
+	defer server.Close()
+
+	raw := fmt.Sprintf(`
+name: 演示例子
+match_url:
+  - '^https://example\.com/api/suite$'
+upload:
+  server_url: %s/upload
+  file:
+    type: Response Body
+    size_limit:
+      min: 51200
+`, server.URL)
+	var cfg asyncYamlConfig
+	if err := yaml.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatalf("yaml: %v", err)
+	}
+	rule, err := compileAsyncRule(cfg)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	asyncStore.Store(&asyncSet{enabled: true, rules: []asyncRule{rule}})
+	defer asyncStore.Store(&asyncSet{})
+
+	u, err := url.Parse("https://example.com/api/suite")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	makeFlow := func(size int) *proxy.Flow {
+		return &proxy.Flow{
+			Request:  &proxy.Request{Method: http.MethodPost, URL: u},
+			Response: &proxy.Response{Body: []byte(strings.Repeat("x", size))},
+		}
+	}
+	asyncHandleFlow(makeFlow(1000))  // 太小，只写过滤日志
+	asyncHandleFlow(makeFlow(60000)) // 命中，先埋日志再异步上传
+
+	var notices []asyncNotice
+	for i := 0; i < 200; i++ {
+		notices = append(notices, takeNotices()...)
+		if atomic.LoadInt32(&hits) == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	notices = append(notices, takeNotices()...)
+
+	wantFiltered := "「演示例子」过滤 https://example.com/api/suite（响应体 1000 字节）"
+	wantHit := "「演示例子」尝试上传 https://example.com/api/suite（响应体 60000 字节）"
+	var logged, hit *asyncNotice
+	for index := range notices {
+		item := &notices[index]
+		if item.Kind != "log" {
+			continue
+		}
+		if item.Text == wantFiltered {
+			logged = item
+		}
+		if item.Text == wantHit {
+			hit = item
+		}
+	}
+	if logged == nil || logged.Level != "warn" {
+		t.Fatalf("missing filter line, got %v", notices)
+	}
+	if hit == nil || hit.Level != "info" {
+		t.Fatalf("missing upload line, got %v", notices)
+	}
+}
+
+// chunk_upload 已移除：配置里残留这个字段也只是被忽略，body 一律一次发完。
+func TestAsyncUploadSendsSingleRequest(t *testing.T) {
 	var mu sync.Mutex
-	var indexes []int
-	var totals []int
-	var bodies []string
+	var requests int
+	var received int
+	var chunkHeaders []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		index, _ := strconv.Atoi(r.Header.Get("X-Chunk-Index"))
-		total, _ := strconv.Atoi(r.Header.Get("X-Total-Chunks"))
 		mu.Lock()
-		indexes = append(indexes, index)
-		totals = append(totals, total)
-		bodies = append(bodies, string(body))
+		requests++
+		received = len(body)
+		if index := r.Header.Get("X-Chunk-Index"); index != "" {
+			chunkHeaders = append(chunkHeaders, index)
+		}
+		if total := r.Header.Get("X-Total-Chunks"); total != "" {
+			chunkHeaders = append(chunkHeaders, total)
+		}
 		mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"detail":"ok"}`))
@@ -292,7 +394,7 @@ func TestAsyncChunkUpload(t *testing.T) {
 	defer server.Close()
 
 	raw := fmt.Sprintf(`
-name: 分片
+name: 旧分片配置
 match_url:
   - '^https://example\.com/chunk$'
 upload:
@@ -311,11 +413,8 @@ upload:
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	if rule.chunkSize != 65536 {
-		t.Fatalf("chunkSize = %d", rule.chunkSize)
-	}
 
-	body := bytes.Repeat([]byte("a"), 150000)
+	body := []byte(strings.Repeat("a", 150000))
 	status, _, err := rule.post(&http.Client{}, server.URL+"/upload", "", body, map[string]string{})
 	if err != nil {
 		t.Fatalf("post: %v", err)
@@ -323,40 +422,16 @@ upload:
 	if status != http.StatusOK {
 		t.Fatalf("status = %d", status)
 	}
-	if len(bodies) != 3 {
-		t.Fatalf("expected 3 chunks, got %d", len(bodies))
+	mu.Lock()
+	defer mu.Unlock()
+	if requests != 1 {
+		t.Fatalf("expected 1 request, got %d", requests)
 	}
-	if indexes[0] != 0 || indexes[1] != 1 || indexes[2] != 2 {
-		t.Fatalf("chunk indexes = %v", indexes)
+	if received != len(body) {
+		t.Fatalf("received %d bytes, want %d", received, len(body))
 	}
-	for _, total := range totals {
-		if total != 3 {
-			t.Fatalf("total chunks = %v", totals)
-		}
-	}
-	if strings.Join(bodies, "") != string(body) {
-		t.Fatalf("chunk bodies do not add up")
-	}
-
-	// 关掉分片：即使 body 很大也只发一次，且不带分片头。
-	off := strings.Replace(raw, "enable: true", "enable: false", 1)
-	var cfg2 asyncYamlConfig
-	if err := yaml.Unmarshal([]byte(off), &cfg2); err != nil {
-		t.Fatalf("yaml2: %v", err)
-	}
-	rule2, err := compileAsyncRule(cfg2)
-	if err != nil {
-		t.Fatalf("compile2: %v", err)
-	}
-	if rule2.chunkSize != 0 {
-		t.Fatalf("chunk should be off, got %d", rule2.chunkSize)
-	}
-	indexes, totals, bodies = nil, nil, nil
-	if _, _, err := rule2.post(&http.Client{}, server.URL+"/upload", "", body, map[string]string{}); err != nil {
-		t.Fatalf("post2: %v", err)
-	}
-	if len(bodies) != 1 {
-		t.Fatalf("expected 1 request, got %d", len(bodies))
+	if len(chunkHeaders) != 0 {
+		t.Fatalf("chunk headers should be gone, got %v", chunkHeaders)
 	}
 }
 
